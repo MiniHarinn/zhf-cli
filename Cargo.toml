@@ -14,3 +14,4 @@ scraper = "0.21"
 tabled = { version = "0.16", features = ["ansi"] }
 csv = "1"
 anyhow = "1"
+owo-colors = { version = "4", features = ["supports-colors"] }
