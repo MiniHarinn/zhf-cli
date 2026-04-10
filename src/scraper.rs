@@ -24,7 +24,7 @@ pub struct FailureItem {
     pub platform: String,
     pub maintainer: Option<String>,
     pub hydra_url: String,
-    pub kind: &'static str, // "direct", "indirect", or "problematic"
+    pub kind: &'static str,      // "direct", "indirect", or "problematic"
     pub dependants: Option<u32>, // only for "problematic"
 }
 
@@ -199,12 +199,7 @@ pub fn fetch_problematic() -> Result<(Vec<FailureItem>, PageMeta)> {
             let platform = cols[1].text().collect::<String>().trim().to_string();
 
             // Col 2: Number of dependants
-            let dependants: Option<u32> = cols[2]
-                .text()
-                .collect::<String>()
-                .trim()
-                .parse()
-                .ok();
+            let dependants: Option<u32> = cols[2].text().collect::<String>().trim().parse().ok();
 
             items.push(FailureItem {
                 attrpath,
@@ -244,10 +239,7 @@ pub fn fetch_failures(job_filter: JobFilter) -> Result<(Vec<FailureItem>, PageMe
 
     // Map h2 id to table index
     // Typically: h2#direct -> tables[0], h2#indirect -> tables[1]
-    let section_ids: Vec<&str> = h2s
-        .iter()
-        .map(|h| h.value().id().unwrap_or(""))
-        .collect();
+    let section_ids: Vec<&str> = h2s.iter().map(|h| h.value().id().unwrap_or("")).collect();
 
     for (i, table) in tables.iter().enumerate() {
         let kind: &'static str = if section_ids.get(i).copied() == Some("indirect") {
@@ -297,7 +289,7 @@ pub fn fetch_failures(job_filter: JobFilter) -> Result<(Vec<FailureItem>, PageMe
             // indirect table has no maintainer column
             let maintainer = if kind == "direct" && cols.len() >= 4 {
                 let m = cols[3].text().collect::<String>().trim().to_string();
-                if m.is_empty() { None } else { Some(m) }
+                normalize_maintainer(&m)
             } else {
                 None
             };
@@ -343,10 +335,24 @@ fn extract_platform(attrpath: &str) -> String {
     // Last segment after final dot is often the platform
     let parts: Vec<&str> = attrpath.split('.').collect();
     if let Some(last) = parts.last() {
-        let known = ["aarch64-linux", "x86_64-linux", "aarch64-darwin", "x86_64-darwin"];
+        let known = [
+            "aarch64-linux",
+            "x86_64-linux",
+            "aarch64-darwin",
+            "x86_64-darwin",
+        ];
         if known.contains(last) {
             return last.to_string();
         }
     }
     String::from("unknown")
+}
+
+fn normalize_maintainer(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "_" {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
