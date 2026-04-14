@@ -39,9 +39,7 @@ jobs:
       - name: Run generator
         run: ./target/release/zhf-generator
         env:
-          # CI runner has dedicated resources; increase nix eval parallelism
-          # beyond the conservative default of 2.
-          ZHF_MAINTAINER_CONCURRENCY: 8
+          ZHF_MAINTAINER_CONCURRENCY: 1
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
