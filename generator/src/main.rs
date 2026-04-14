@@ -36,8 +36,10 @@ async fn main() -> Result<()> {
 
     // ── 2. Fetch builds from both evals ────────────────────────────────────
     log::info!("Fetching builds…");
-    let nixos_builds = hydra::get_eval_builds(&client, nixos_eval.id, true).await?;
-    let nixpkgs_builds = hydra::get_eval_builds(&client, nixpkgs_eval.id, false).await?;
+    let (nixos_builds, nixpkgs_builds) = tokio::try_join!(
+        hydra::get_eval_builds(&client, nixos_eval.id, true),
+        hydra::get_eval_builds(&client, nixpkgs_eval.id, false),
+    )?;
 
     let all_builds: Vec<_> = nixos_builds.into_iter().chain(nixpkgs_builds).collect();
     log::info!("Total failed builds: {}", all_builds.len());
