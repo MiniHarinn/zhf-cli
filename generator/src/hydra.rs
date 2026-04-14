@@ -11,6 +11,7 @@ pub struct EvalInfo {
     pub nixpkgs_commit: String,
 }
 
+#[derive(Clone)]
 pub struct Build {
     /// Display attrpath (e.g. "nixos.tests.foo.x86_64-linux" or "nixpkgs.bar.x86_64-linux")
     pub attrpath: String,

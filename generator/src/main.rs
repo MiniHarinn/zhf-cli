@@ -54,21 +54,56 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all("output/data")?;
 
-    // ── 3. Per-channel: resolve maintainers, categorize, write files ───────
+    // ── 3. Resolve maintainers globally — deduped across channels ──────────
+    //
+    // Channels of the same project type (nixos/nixpkgs) share most failing
+    // attrpaths. Resolving per-channel would repeat work for the same packages.
+    // Instead, collect the union of attrpaths per project type and resolve once,
+    // using the unstable channel's commit (most up-to-date) for each type.
+    // Both groups resolve concurrently.
+    let nixos_unstable_commit = &evals[0].nixpkgs_commit;   // nixos/unstable
+    let nixpkgs_unstable_commit = &evals[2].nixpkgs_commit; // nixpkgs/unstable
+
+    let mut seen_nixos: HashSet<String> = HashSet::new();
+    let mut seen_nixpkgs: HashSet<String> = HashSet::new();
+    let mut global_nixos: Vec<hydra::Build> = Vec::new();
+    let mut global_nixpkgs: Vec<hydra::Build> = Vec::new();
+
+    for builds in &builds_per_channel {
+        for b in builds {
+            if b.is_nixos {
+                if seen_nixos.insert(b.nix_attr.clone()) {
+                    global_nixos.push(b.clone());
+                }
+            } else if seen_nixpkgs.insert(b.nix_attr.clone()) {
+                global_nixpkgs.push(b.clone());
+            }
+        }
+    }
+
+    log::info!(
+        "Resolving maintainers: {} unique nixos attrs, {} unique nixpkgs attrs (concurrent)…",
+        global_nixos.len(),
+        global_nixpkgs.len()
+    );
+
+    let (nixos_maintainers, nixpkgs_maintainers) = tokio::join!(
+        maintainers::resolve_all(&global_nixos, nixos_unstable_commit),
+        maintainers::resolve_all(&global_nixpkgs, nixpkgs_unstable_commit),
+    );
+
+    let mut all_maintainers = nixos_maintainers;
+    all_maintainers.extend(nixpkgs_maintainers);
+    log::info!("Maintainers resolved for {} unique attrs total", all_maintainers.len());
+
+    // ── 4. Per-channel: categorize builds and write files ──────────────────
     let mut channel_index: HashMap<String, ChannelInfo> = HashMap::new();
 
     for (i, ch) in CHANNELS.iter().enumerate() {
-        let eval = &evals[i];
         let builds = &builds_per_channel[i];
 
-        log::info!(
-            "Resolving maintainers for {}/{} ({} builds)…",
-            ch.project, ch.jobset, builds.len()
-        );
-        let maintainers_map = maintainers::resolve_all(builds, &eval.nixpkgs_commit).await;
-
         let (direct, indirect, direct_counts, indirect_counts) =
-            categorize_builds(builds, &maintainers_map);
+            categorize_builds(builds, &all_maintainers);
 
         log::info!(
             "{}/{}: direct={} indirect={}",
@@ -84,6 +119,7 @@ async fn main() -> Result<()> {
             serde_json::to_string_pretty(&indirect)?,
         )?;
 
+        let eval = &evals[i];
         channel_index.insert(
             ch.slug.to_string(),
             ChannelInfo {
@@ -94,7 +130,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    // ── 4. Write index.json ────────────────────────────────────────────────
+    // ── 5. Write index.json ────────────────────────────────────────────────
     let index = IndexJson {
         generated_at: hydra::now_formatted(),
         channels: channel_index,
