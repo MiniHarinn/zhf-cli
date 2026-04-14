@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use zhf_types::FailureItem;
 
-use crate::cli::JobFilter;
+use crate::cli::{JobFilter, FailureFilter};
 
 /// Base URL for the published GitHub Pages data.
 /// Override at runtime with the ZHF_DATA_URL env variable (useful for local testing).
@@ -40,25 +40,30 @@ pub fn fetch_stats() -> Result<Stats> {
     fetch_json("data/index.json")
 }
 
-pub fn fetch_failures(job_filter: JobFilter) -> Result<Vec<FailureEntry>> {
-    match job_filter {
-        JobFilter::Direct => {
-            let items: Vec<FailureItem> = fetch_json("data/direct.json")?;
-            Ok(items.into_iter().map(|item| FailureEntry { item, kind: "direct" }).collect())
-        }
-        JobFilter::Indirect => {
-            let items: Vec<FailureItem> = fetch_json("data/indirect.json")?;
-            Ok(items.into_iter().map(|item| FailureEntry { item, kind: "indirect" }).collect())
-        }
-        JobFilter::All => {
-            let direct: Vec<FailureItem> = fetch_json("data/direct.json")?;
-            let indirect: Vec<FailureItem> = fetch_json("data/indirect.json")?;
-            let mut entries: Vec<FailureEntry> = direct
-                .into_iter()
-                .map(|item| FailureEntry { item, kind: "direct" })
-                .collect();
-            entries.extend(indirect.into_iter().map(|item| FailureEntry { item, kind: "indirect" }));
-            Ok(entries)
+pub fn fetch_failures(job_filter: JobFilter, filter: &FailureFilter) -> Result<Vec<FailureEntry>> {
+    // Determine which jobset files to load based on --nixpkgs / --nixos flags.
+    // Loading only the needed file halves fetch time in the common filtered case.
+    let jobsets: &[&str] = if filter.nixpkgs {
+        &["nixpkgs"]
+    } else if filter.nixos {
+        &["nixos"]
+    } else {
+        &["nixpkgs", "nixos"]
+    };
+
+    let kinds: &[(&str, &'static str)] = match job_filter {
+        JobFilter::Direct => &[("direct", "direct")],
+        JobFilter::Indirect => &[("indirect", "indirect")],
+        JobFilter::All => &[("direct", "direct"), ("indirect", "indirect")],
+    };
+
+    let mut entries = Vec::new();
+    for jobset in jobsets {
+        for (kind_slug, kind_label) in kinds {
+            let path = format!("data/{kind_slug}_{jobset}.json");
+            let items: Vec<FailureItem> = fetch_json(&path)?;
+            entries.extend(items.into_iter().map(|item| FailureEntry { item, kind: kind_label }));
         }
     }
+    Ok(entries)
 }

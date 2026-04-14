@@ -117,7 +117,10 @@ pub fn print_failures(entries: &[FailureEntry]) {
             } else {
                 style_text(&e.item.maintainers.join(", "), Style::new().magenta())
             },
-            hydra_url: style_text(&e.item.hydra_url, Style::new().underline().blue()),
+            hydra_url: style_text(
+                &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
+                Style::new().underline().blue(),
+            ),
             kind: kind(e.kind),
         })
         .collect();
@@ -145,7 +148,7 @@ pub fn export_csv(entries: &[FailureEntry], dest: &str) -> Result<()> {
             e.item.attrpath.as_str(),
             e.item.platform.as_str(),
             maintainers.as_str(),
-            e.item.hydra_url.as_str(),
+            &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
             e.kind,
             newly_failing,
         ])?;

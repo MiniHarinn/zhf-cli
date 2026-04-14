@@ -26,20 +26,19 @@ fn main() -> Result<()> {
 }
 
 fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter) -> Result<()> {
-    let mut entries = fetcher::fetch_failures(job_filter)?;
-
-    // Apply attrset filter
-    if filter.nixpkgs {
-        entries.retain(|e| e.item.attrpath.starts_with("nixpkgs."));
-    } else if filter.nixos {
-        entries.retain(|e| e.item.attrpath.starts_with("nixos."));
-    }
+    let mut entries = fetcher::fetch_failures(job_filter, &filter)?;
 
     // Apply platform filter
     match filter.fails_on {
         FailsOn::All => {}
-        FailsOn::Linux => entries.retain(|e| e.item.platform.contains("linux")),
-        FailsOn::Darwin => entries.retain(|e| e.item.platform.contains("darwin")),
+        FailsOn::Linux => entries.retain(|e| matches!(
+            e.item.platform.as_str(),
+            "aarch64-linux" | "x86_64-linux" | "i686-linux"
+        )),
+        FailsOn::Darwin => entries.retain(|e| matches!(
+            e.item.platform.as_str(),
+            "aarch64-darwin" | "x86_64-darwin"
+        )),
         FailsOn::Aarch64Linux => entries.retain(|e| e.item.platform == "aarch64-linux"),
         FailsOn::X8664Linux => entries.retain(|e| e.item.platform == "x86_64-linux"),
         FailsOn::Aarch64Darwin => entries.retain(|e| e.item.platform == "aarch64-darwin"),

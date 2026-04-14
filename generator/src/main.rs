@@ -71,8 +71,10 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut direct: Vec<FailureItem> = Vec::new();
-    let mut indirect: Vec<FailureItem> = Vec::new();
+    let mut direct_nixpkgs: Vec<FailureItem> = Vec::new();
+    let mut direct_nixos: Vec<FailureItem> = Vec::new();
+    let mut indirect_nixpkgs: Vec<FailureItem> = Vec::new();
+    let mut indirect_nixos: Vec<FailureItem> = Vec::new();
 
     for b in &all_builds {
         // If this attrpath is known as direct, skip its indirect entry
@@ -107,13 +109,15 @@ async fn main() -> Result<()> {
             attrpath: b.attrpath.clone(),
             platform: b.platform.clone(),
             maintainers: meta.maintainers,
-            hydra_url: format!("https://hydra.nixos.org/build/{}", b.hydra_id),
+            hydra_id: b.hydra_id,
             newly_failing: b.newly_failing,
         };
 
-        match b.status {
-            BuildStatus::Direct => direct.push(item),
-            BuildStatus::Indirect => indirect.push(item),
+        match (b.status, b.is_nixos) {
+            (BuildStatus::Direct, false) => direct_nixpkgs.push(item),
+            (BuildStatus::Direct, true) => direct_nixos.push(item),
+            (BuildStatus::Indirect, false) => indirect_nixpkgs.push(item),
+            (BuildStatus::Indirect, true) => indirect_nixos.push(item),
         }
     }
 
@@ -137,23 +141,18 @@ async fn main() -> Result<()> {
     // ── 5. Write output files ──────────────────────────────────────────────
     fs::create_dir_all("output/data")?;
 
-    fs::write(
-        "output/data/index.json",
-        serde_json::to_string_pretty(&index)?,
-    )?;
-    fs::write(
-        "output/data/direct.json",
-        serde_json::to_string_pretty(&direct)?,
-    )?;
-    fs::write(
-        "output/data/indirect.json",
-        serde_json::to_string_pretty(&indirect)?,
-    )?;
+    fs::write("output/data/index.json", serde_json::to_string_pretty(&index)?)?;
+    fs::write("output/data/direct_nixpkgs.json", serde_json::to_string_pretty(&direct_nixpkgs)?)?;
+    fs::write("output/data/direct_nixos.json", serde_json::to_string_pretty(&direct_nixos)?)?;
+    fs::write("output/data/indirect_nixpkgs.json", serde_json::to_string_pretty(&indirect_nixpkgs)?)?;
+    fs::write("output/data/indirect_nixos.json", serde_json::to_string_pretty(&indirect_nixos)?)?;
 
     log::info!(
-        "Done. direct={} indirect={} total={}",
-        direct.len(),
-        indirect.len(),
+        "Done. direct_nixpkgs={} direct_nixos={} indirect_nixpkgs={} indirect_nixos={} total={}",
+        direct_nixpkgs.len(),
+        direct_nixos.len(),
+        indirect_nixpkgs.len(),
+        indirect_nixos.len(),
         index.counts.total
     );
     Ok(())
