@@ -21,6 +21,16 @@ nix develop --command <command>
 
 The flake provides Rust toolchain, openssl, and pkg-config. Never use bare `cargo`; always use `nix develop --command cargo`.
 
+## Commit Message Convention
+
+Use conventional commits with short subject only (no description):
+- `fix: <short subject>`
+- `feat: <short subject>`
+- `docs: <short subject>`
+- `refactor: <short subject>`
+
+Examples: `fix: populate maintainers in output JSON`, `docs: add CLAUDE.md`
+
 ## Common Commands
 
 **Build:**
