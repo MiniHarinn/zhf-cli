@@ -116,14 +116,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    let generated_at = {
-        // Current time via system clock (no external dep)
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        hydra::format_timestamp(secs)
-    };
+    let generated_at = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S (UTC)")
+        .to_string();
 
     let index = IndexJson {
         generated_at,

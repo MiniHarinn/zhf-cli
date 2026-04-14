@@ -15,4 +15,6 @@ serde_json = "1"
 anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
+chrono = { version = "0.4", features = ["std", "clock"], default-features = false }
+html-escape = "0.2"
 zhf-types = { path = "../crates/types" }

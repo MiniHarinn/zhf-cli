@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use chrono::DateTime;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -109,38 +110,10 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 pub fn format_timestamp(ts: u64) -> String {
-    // Manual UTC formatting without pulling in chrono
-    let secs = ts % 60;
-    let mins = (ts / 60) % 60;
-    let hours = (ts / 3600) % 24;
-    let mut days = ts / 86400;
-
-    // days since 1970-01-01
-    let mut year = 1970u64;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let months = [31u64, if is_leap(year) { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1u64;
-    for m in months {
-        if days < m {
-            break;
-        }
-        days -= m;
-        month += 1;
-    }
-    let day = days + 1;
-
-    format!("{year:04}-{month:02}-{day:02} {hours:02}:{mins:02}:{secs:02} (UTC)")
-}
-
-fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    DateTime::from_timestamp(ts as i64, 0)
+        .unwrap_or_default()
+        .format("%Y-%m-%d %H:%M:%S (UTC)")
+        .to_string()
 }
 
 fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build>> {
@@ -163,8 +136,8 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
             continue;
         };
 
-        let job = decode_html_entities(job_name.trim());
-        let platform = decode_html_entities(platform.trim());
+        let job = html_escape::decode_html_entities(job_name.trim()).into_owned();
+        let platform = html_escape::decode_html_entities(platform.trim()).into_owned();
 
         let (attrpath, nix_attr) = if is_nixos {
             if !job.starts_with("nixos.") {
@@ -283,16 +256,7 @@ fn extract_attr(haystack: &str, attr: &str) -> Option<String> {
     let start_idx = haystack.find(&needle)? + needle.len();
     let rest = &haystack[start_idx..];
     let end_idx = rest.find('"')?;
-    Some(decode_html_entities(&rest[..end_idx]))
-}
-
-fn decode_html_entities(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
+    Some(html_escape::decode_html_entities(&rest[..end_idx]).into_owned())
 }
 
 #[cfg(test)]
