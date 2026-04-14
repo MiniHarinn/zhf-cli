@@ -17,7 +17,6 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
-    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +38,6 @@ jobs:
 
       - name: Run generator
         run: ./target/release/zhf-generator
-        timeout-minutes: 90
         env:
           # CI runner has dedicated resources; increase nix eval parallelism
           # beyond the conservative default of 2.
