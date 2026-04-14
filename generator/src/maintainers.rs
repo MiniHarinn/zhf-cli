@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
@@ -45,6 +46,8 @@ pub async fn resolve_all(
             .push((attrpath, nix_attr));
     }
 
+    let total = unique.len();
+    let completed = Arc::new(AtomicUsize::new(0));
     let sem = Arc::new(Semaphore::new(PARALLEL_NIX_EVALS));
     let mut handles = Vec::new();
 
@@ -56,10 +59,14 @@ pub async fn resolve_all(
                 .collect();
             let commit = commit.to_string();
             let sem = sem.clone();
+            let completed = completed.clone();
 
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await.ok()?;
-                Some(eval_meta_batch(&chunk, &commit, is_nixos).await)
+                let result = eval_meta_batch(&chunk, &commit, is_nixos).await;
+                let done = completed.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
+                log::info!("Maintainers: {done}/{total} attrs resolved");
+                Some(result)
             }));
         }
     }
