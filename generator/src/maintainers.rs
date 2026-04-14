@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::process::Command;
@@ -7,7 +8,7 @@ use tokio::sync::Semaphore;
 use crate::hydra::Build;
 
 /// Max parallel `nix eval` processes. Each process now evaluates a batch of attrs.
-const PARALLEL_NIX_EVALS: usize = 8;
+const DEFAULT_PARALLEL_NIX_EVALS: usize = 2;
 /// Number of attrpaths to resolve in a single `nix eval` invocation.
 const BATCH_SIZE: usize = 50;
 
@@ -28,6 +29,8 @@ pub async fn resolve_all(
     nixos_commit: &str,
     nixpkgs_commit: &str,
 ) -> HashMap<String, MetaInfo> {
+    let parallel_nix_evals = maintainer_eval_concurrency();
+
     // Deduplicate: one nix eval per unique attrpath (maintainers are per-package, not per-platform)
     let mut unique: HashMap<&str, (&str, &str, bool)> = HashMap::new();
     for build in builds {
@@ -48,8 +51,14 @@ pub async fn resolve_all(
 
     let total = unique.len();
     let completed = Arc::new(AtomicUsize::new(0));
-    let sem = Arc::new(Semaphore::new(PARALLEL_NIX_EVALS));
+    let sem = Arc::new(Semaphore::new(parallel_nix_evals));
     let mut handles = Vec::new();
+
+    log::info!(
+        "Resolving maintainers with concurrency={} batch_size={}",
+        parallel_nix_evals,
+        BATCH_SIZE
+    );
 
     for ((commit, is_nixos), attrs) in groups {
         for chunk in attrs.chunks(BATCH_SIZE) {
@@ -154,4 +163,12 @@ async fn eval_meta_batch(
             (attrpath.clone(), MetaInfo { maintainers })
         })
         .collect()
+}
+
+fn maintainer_eval_concurrency() -> usize {
+    env::var("ZHF_MAINTAINER_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PARALLEL_NIX_EVALS)
 }
