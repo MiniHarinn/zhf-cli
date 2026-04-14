@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::DateTime;
 use reqwest::Client;
+use scraper::{Html, Selector};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -83,10 +84,7 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
 
     let builds = parse_eval_html(&html, is_nixos, eval_id)?;
 
-    log::info!(
-        "Kept {} failed builds for eval {eval_id}",
-        builds.len()
-    );
+    log::info!("Kept {} failed builds for eval {eval_id}", builds.len());
     Ok(builds)
 }
 
@@ -133,106 +131,71 @@ pub fn format_timestamp(ts: u64) -> String {
         .to_string()
 }
 
+/// Formats the current UTC time using the same format as `format_timestamp`.
+pub fn now_formatted() -> String {
+    format_timestamp(chrono::Utc::now().timestamp() as u64)
+}
+
 fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build>> {
-    // Try section-aware parsing first. The Hydra eval page organises builds
-    // into named tab panes: "tabs-now-fail" (new regressions), "tabs-still-fail"
-    // (chronic), and "tabs-aborted" (aborted / timed out).
-    let now_fail = extract_section_html(html, "tabs-now-fail");
-    let still_fail = extract_section_html(html, "tabs-still-fail");
-    let aborted = extract_section_html(html, "tabs-aborted");
+    let doc = Html::parse_document(html);
 
-    let sections_found = now_fail.is_some() || still_fail.is_some() || aborted.is_some();
+    // The Hydra eval page organises builds into named tab panes:
+    // "tabs-now-fail" (new regressions), "tabs-still-fail" (chronic), "tabs-aborted".
+    let section_sel  = Selector::parse("#tabs-now-fail, #tabs-still-fail, #tabs-aborted").unwrap();
+    let row_sel      = Selector::parse("tr").unwrap();
+    let status_sel   = Selector::parse("img.build-status").unwrap();
+    let link_sel     = Selector::parse("a[href*='/build/']").unwrap();
+    let platform_sel = Selector::parse("td.nowrap tt").unwrap();
 
-    let mut builds = if sections_found {
-        let mut v = Vec::new();
-        if let Some(s) = now_fail {
-            v.extend(parse_rows_in_section(s, is_nixos));
-        }
-        if let Some(s) = still_fail {
-            v.extend(parse_rows_in_section(s, is_nixos));
-        }
-        if let Some(s) = aborted {
-            v.extend(parse_rows_in_section(s, is_nixos));
-        }
-        v
+    let sections: Vec<_> = doc.select(&section_sel).collect();
+    let rows: Vec<_> = if sections.is_empty() {
+        // Fallback: parse whole document (no section divs — test HTML or Hydra changed its structure).
+        doc.root_element().select(&row_sel).collect()
     } else {
-        // Fallback: parse whole document (no section divs — test HTML or Hydra
-        // changed its structure).
-        parse_rows_in_section(html, is_nixos)
+        sections.iter().flat_map(|s| s.select(&row_sel)).collect()
     };
 
-    // Stamp is_nixos on every build (not available inside the row parser)
-    for b in &mut builds {
-        b.is_nixos = is_nixos;
-    }
-
-    if builds.is_empty() {
-        log::warn!("parsed zero failed builds for eval {eval_id} — eval may have no failures");
-    }
-
-    Ok(builds)
-}
-
-/// Extracts the HTML content of a tab-pane `<div id="{section_id}" ...>` by
-/// tracking nesting depth, so nested divs are handled correctly.
-fn extract_section_html<'a>(html: &'a str, section_id: &str) -> Option<&'a str> {
-    let marker = format!("id=\"{section_id}\"");
-    let id_pos = html.find(&marker)?;
-    // Walk back from the id attribute to find the opening <div tag.
-    let div_start = html[..id_pos].rfind("<div")?;
-    let after_open = &html[div_start..];
-
-    let mut depth: usize = 0;
-    let mut pos = 0;
-    while pos < after_open.len() {
-        if after_open[pos..].starts_with("<div") {
-            depth += 1;
-            pos += 4;
-        } else if after_open[pos..].starts_with("</div>") {
-            depth = depth.saturating_sub(1);
-            if depth == 0 {
-                return Some(&after_open[..pos + "</div>".len()]);
-            }
-            pos += 6;
-        } else {
-            pos += 1;
-        }
-    }
-    None
-}
-
-/// Parses all failed-build rows within a slice of HTML. `is_nixos` is set to
-/// `false` here and overwritten by the caller after the fact (it's not row-specific).
-fn parse_rows_in_section(html: &str, is_nixos: bool) -> Vec<Build> {
     let mut builds = Vec::new();
-
-    for row in extract_all(html, "<tr>", "</tr>") {
-        let Some(status_text) = extract_status(row) else {
+    for row in rows {
+        // Status is encoded in an img title attribute (e.g. "Failed", "Dependency failed").
+        let Some(status_text) = row
+            .select(&status_sel)
+            .next()
+            .and_then(|e| e.value().attr("title"))
+        else {
             continue;
         };
-        let Some(status) = map_status(&status_text) else {
-            continue;
-        };
-
-        let links = extract_build_links(row);
-        // links[0]: row-link (text = build ID number), links[1]: job name link
-        let Some((hydra_id, job_name)) = links.get(1).cloned() else {
-            continue;
-        };
-        let Some(platform) = extract_between(row, "<td class=\"nowrap\"><tt>", "</tt>") else {
+        let Some(status) = map_status(status_text) else {
             continue;
         };
 
-        let job = html_escape::decode_html_entities(job_name.trim()).into_owned();
-        let platform = html_escape::decode_html_entities(platform.trim()).into_owned();
+        // Each row has two build links: links[0] = row-link (text = build ID number),
+        // links[1] = job name link. Both href to /build/{id}.
+        let links: Vec<_> = row.select(&link_sel).collect();
+        let Some(job_link) = links.get(1) else {
+            continue;
+        };
+
+        let href = job_link.value().attr("href").unwrap_or("");
+        let Some(hydra_id) = href.rsplit('/').next().and_then(|s| s.parse::<u64>().ok()) else {
+            continue;
+        };
+
+        let job = job_link.text().collect::<String>();
+        let job = job.trim();
+
+        let Some(platform_el) = row.select(&platform_sel).next() else {
+            continue;
+        };
+        let platform = platform_el.text().collect::<String>().trim().to_string();
 
         let (attrpath, nix_attr) = if is_nixos {
             if !job.starts_with("nixos.") {
                 continue;
             }
-            (job.clone(), job.clone())
+            (job.to_string(), job.to_string())
         } else {
-            (format!("nixpkgs.{job}"), job.clone())
+            (format!("nixpkgs.{job}"), job.to_string())
         };
 
         builds.push(Build {
@@ -245,7 +208,10 @@ fn parse_rows_in_section(html: &str, is_nixos: bool) -> Vec<Build> {
         });
     }
 
-    builds
+    if builds.is_empty() {
+        log::warn!("parsed zero failed builds for eval {eval_id} — eval may have no failures");
+    }
+    Ok(builds)
 }
 
 fn map_status(status: &str) -> Option<BuildStatus> {
@@ -256,89 +222,3 @@ fn map_status(status: &str) -> Option<BuildStatus> {
         _ => None,
     }
 }
-
-fn extract_build_links(row: &str) -> Vec<(u64, String)> {
-    let mut out = Vec::new();
-    let mut rest = row;
-
-    while let Some((prefix_idx, prefix_len)) = find_build_href(rest) {
-        rest = &rest[prefix_idx + prefix_len..];
-        let Some(end_id) = rest.find('"') else {
-            break;
-        };
-        let Ok(id) = rest[..end_id].parse::<u64>() else {
-            break;
-        };
-
-        let Some(gt) = rest[end_id..].find('>') else {
-            break;
-        };
-        let text_start = end_id + gt + 1;
-        let Some(text_end_rel) = rest[text_start..].find("</a>") else {
-            break;
-        };
-        let text = rest[text_start..text_start + text_end_rel].to_string();
-        out.push((id, text));
-        rest = &rest[text_start + text_end_rel + "</a>".len()..];
-    }
-
-    out
-}
-
-fn extract_status(row: &str) -> Option<String> {
-    let img = extract_between(row, "<img ", ">")?;
-    if !img.contains("class=\"build-status\"") {
-        return None;
-    }
-    extract_attr(img, "title")
-}
-
-fn find_build_href(haystack: &str) -> Option<(usize, usize)> {
-    const ABSOLUTE: &str = "href=\"https://hydra.nixos.org/build/";
-    const RELATIVE: &str = "href=\"/build/";
-
-    match (haystack.find(ABSOLUTE), haystack.find(RELATIVE)) {
-        (Some(abs), Some(rel)) => {
-            if abs <= rel {
-                Some((abs, ABSOLUTE.len()))
-            } else {
-                Some((rel, RELATIVE.len()))
-            }
-        }
-        (Some(abs), None) => Some((abs, ABSOLUTE.len())),
-        (None, Some(rel)) => Some((rel, RELATIVE.len())),
-        (None, None) => None,
-    }
-}
-
-fn extract_all<'a>(haystack: &'a str, start: &str, end: &str) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    let mut rest = haystack;
-
-    while let Some(start_idx) = rest.find(start) {
-        let after_start = &rest[start_idx + start.len()..];
-        let Some(end_idx) = after_start.find(end) else {
-            break;
-        };
-        out.push(&after_start[..end_idx]);
-        rest = &after_start[end_idx + end.len()..];
-    }
-
-    out
-}
-
-fn extract_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
-    let start_idx = haystack.find(start)? + start.len();
-    let rest = &haystack[start_idx..];
-    let end_idx = rest.find(end)?;
-    Some(&rest[..end_idx])
-}
-
-fn extract_attr(haystack: &str, attr: &str) -> Option<String> {
-    let needle = format!("{attr}=\"");
-    let start_idx = haystack.find(&needle)? + needle.len();
-    let rest = &haystack[start_idx..];
-    let end_idx = rest.find('"')?;
-    Some(html_escape::decode_html_entities(&rest[..end_idx]).into_owned())
-}
-

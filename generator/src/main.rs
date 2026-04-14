@@ -3,7 +3,7 @@ mod maintainers;
 
 use anyhow::Result;
 use hydra::BuildStatus;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use zhf_types::{EvalInfo, FailureCounts, FailureItem, IndexJson};
 
@@ -19,7 +19,6 @@ async fn main() -> Result<()> {
         // Keep TCP connections alive so the OS doesn't kill them while Hydra
         // serializes large eval responses (can take minutes for 280k builds).
         .tcp_keepalive(std::time::Duration::from_secs(30))
-        .connection_verbose(true)
         .build()?;
 
     // ── 1. Fetch latest finished eval for each jobset ──────────────────────
@@ -64,40 +63,35 @@ async fn main() -> Result<()> {
         total: 0,
     };
 
-    // Dedup by attrpath — prefer direct over indirect
-    let mut seen: HashMap<&str, BuildStatus> = HashMap::new();
-    for b in &all_builds {
-        let entry = seen.entry(b.attrpath.as_str()).or_insert(b.status);
-        if b.status == BuildStatus::Direct {
-            *entry = BuildStatus::Direct;
-        }
-    }
+    // Dedup by attrpath — prefer Direct over Indirect.
+    // Pass 1: collect attrpaths that have at least one Direct failure.
+    let has_direct: HashSet<&str> = all_builds
+        .iter()
+        .filter(|b| b.status == BuildStatus::Direct)
+        .map(|b| b.attrpath.as_str())
+        .collect();
 
+    // Pass 2: emit each attrpath once, skipping Indirect when a Direct exists.
+    let mut emitted: HashSet<&str> = HashSet::new();
     let mut direct_nixpkgs: Vec<FailureItem> = Vec::new();
     let mut direct_nixos: Vec<FailureItem> = Vec::new();
     let mut indirect_nixpkgs: Vec<FailureItem> = Vec::new();
     let mut indirect_nixos: Vec<FailureItem> = Vec::new();
 
     for b in &all_builds {
-        // If this attrpath is known as direct, skip its indirect entry
-        if seen.get(b.attrpath.as_str()) == Some(&BuildStatus::Direct)
-            && b.status == BuildStatus::Indirect
-        {
-            continue;
+        if b.status == BuildStatus::Indirect && has_direct.contains(b.attrpath.as_str()) {
+            continue; // Direct entry will cover this
         }
-        // Skip duplicate attrpath entries (same attrpath, same status)
-        // We already have a canonical entry via `seen` — only emit once
-        if seen.remove(b.attrpath.as_str()).is_none() {
-            continue;
+        if !emitted.insert(b.attrpath.as_str()) {
+            continue; // already emitted
         }
 
-        // Update platform counts
         match b.platform.as_str() {
             "aarch64-darwin" => counts.aarch64_darwin += 1,
-            "aarch64-linux" => counts.aarch64_linux += 1,
-            "x86_64-darwin" => counts.x86_64_darwin += 1,
-            "x86_64-linux" => counts.x86_64_linux += 1,
-            "i686-linux" => counts.i686_linux += 1,
+            "aarch64-linux"  => counts.aarch64_linux += 1,
+            "x86_64-darwin"  => counts.x86_64_darwin += 1,
+            "x86_64-linux"   => counts.x86_64_linux += 1,
+            "i686-linux"     => counts.i686_linux += 1,
             _ => {}
         }
         counts.total += 1;
@@ -115,19 +109,15 @@ async fn main() -> Result<()> {
         };
 
         match (b.status, b.is_nixos) {
-            (BuildStatus::Direct, false) => direct_nixpkgs.push(item),
-            (BuildStatus::Direct, true) => direct_nixos.push(item),
+            (BuildStatus::Direct, false)   => direct_nixpkgs.push(item),
+            (BuildStatus::Direct, true)    => direct_nixos.push(item),
             (BuildStatus::Indirect, false) => indirect_nixpkgs.push(item),
-            (BuildStatus::Indirect, true) => indirect_nixos.push(item),
+            (BuildStatus::Indirect, true)  => indirect_nixos.push(item),
         }
     }
 
-    let generated_at = chrono::Utc::now()
-        .format("%Y-%m-%d %H:%M:%S (UTC)")
-        .to_string();
-
     let index = IndexJson {
-        generated_at,
+        generated_at: hydra::now_formatted(),
         nixos_eval: EvalInfo {
             id: nixos_eval.id,
             time: nixos_eval.time,
@@ -142,11 +132,11 @@ async fn main() -> Result<()> {
     // ── 5. Write output files ──────────────────────────────────────────────
     fs::create_dir_all("output/data")?;
 
-    fs::write("output/data/index.json", serde_json::to_string_pretty(&index)?)?;
-    fs::write("output/data/direct_nixpkgs.json", serde_json::to_string_pretty(&direct_nixpkgs)?)?;
-    fs::write("output/data/direct_nixos.json", serde_json::to_string_pretty(&direct_nixos)?)?;
-    fs::write("output/data/indirect_nixpkgs.json", serde_json::to_string_pretty(&indirect_nixpkgs)?)?;
-    fs::write("output/data/indirect_nixos.json", serde_json::to_string_pretty(&indirect_nixos)?)?;
+    fs::write("output/data/index.json",           serde_json::to_string_pretty(&index)?)?;
+    fs::write("output/data/direct_nixpkgs.json",  serde_json::to_string_pretty(&direct_nixpkgs)?)?;
+    fs::write("output/data/direct_nixos.json",    serde_json::to_string_pretty(&direct_nixos)?)?;
+    fs::write("output/data/indirect_nixpkgs.json",serde_json::to_string_pretty(&indirect_nixpkgs)?)?;
+    fs::write("output/data/indirect_nixos.json",  serde_json::to_string_pretty(&indirect_nixos)?)?;
 
     log::info!(
         "Done. direct_nixpkgs={} direct_nixos={} indirect_nixpkgs={} indirect_nixos={} total={}",
