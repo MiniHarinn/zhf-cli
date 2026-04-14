@@ -54,6 +54,9 @@ nix develop --command cargo run -- direct --nixpkgs --fails-on x86_64-linux
 nix develop --command cargo run -p zhf-generator
 ```
 
+**Reading generated files:**
+When reading generated JSON files in `./output/data/`, use `head` or `tail` to conserve tokens, as these files can be very large (280k+ build entries).
+
 ## Codebase Architecture
 
 ### Workspace Structure
