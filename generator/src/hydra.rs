@@ -3,7 +3,6 @@ use chrono::DateTime;
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::Duration;
 
 pub struct EvalInfo {
     pub id: u64,
@@ -85,18 +84,14 @@ pub async fn get_latest_eval(client: &Client, project: &str, jobset: &str) -> Re
 pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> Result<Vec<Build>> {
     log::info!("Fetching builds for eval {eval_id} (is_nixos={is_nixos})…");
 
-    let html = retry(5, Duration::from_secs(30), || async {
-        client
-            .get(format!("https://hydra.nixos.org/eval/{eval_id}?full=1"))
-            .header("Accept", "text/html")
-            .timeout(Duration::from_secs(300))
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await
-    })
-    .await?;
+    let html = client
+        .get(format!("https://hydra.nixos.org/eval/{eval_id}?full=1"))
+        .header("Accept", "text/html")
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
 
     let builds = parse_eval_html(&html, is_nixos, eval_id)?;
 
@@ -326,27 +321,3 @@ mod tests {
     }
 }
 
-/// Retries an async operation up to `max` times with exponential backoff.
-/// `base_wait` is the initial wait; each retry doubles it (30s, 60s, 120s, …).
-async fn retry<F, Fut, T>(max: u32, base_wait: Duration, mut f: F) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, reqwest::Error>>,
-{
-    let mut attempts = 0;
-    loop {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) if attempts < max => {
-                let wait = base_wait * 2u32.pow(attempts);
-                log::warn!(
-                    "Attempt {}/{max} failed: {e}. Retrying in {wait:?}…",
-                    attempts + 1
-                );
-                tokio::time::sleep(wait).await;
-                attempts += 1;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-}
