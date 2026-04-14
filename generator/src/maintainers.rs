@@ -98,8 +98,11 @@ async fn eval_meta_batch(
     commit: &str,
     is_nixos: bool,
 ) -> HashMap<String, MetaInfo> {
+    // release-combined.nix explicitly strips meta.maintainers via removeMaintainers;
+    // use release.nix directly instead, which preserves them.
+    // release.nix exposes jobs without the "nixos." prefix, so strip it from nix_attr.
     let nix_file = if is_nixos {
-        "nixpkgs/nixos/release-combined.nix"
+        "nixpkgs/nixos/release.nix"
     } else {
         "nixpkgs/pkgs/top-level/release.nix"
     };
@@ -113,8 +116,13 @@ async fn eval_meta_batch(
          in {{\n"
     );
     for (i, (_, nix_attr)) in attrs.iter().enumerate() {
+        let attr = if is_nixos {
+            nix_attr.strip_prefix("nixos.").unwrap_or(nix_attr)
+        } else {
+            nix_attr.as_str()
+        };
         expr.push_str(&format!(
-            "  \"{i}\" = safe (pkgs.{nix_attr}.meta.maintainers or []);\n"
+            "  \"{i}\" = safe (pkgs.{attr}.meta.maintainers or []);\n"
         ));
     }
     expr.push('}');
