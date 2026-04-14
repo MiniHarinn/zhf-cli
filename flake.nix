@@ -22,6 +22,7 @@
             rustToolchain
             pkg-config
             openssl
+            caddy
           ];
         };
 

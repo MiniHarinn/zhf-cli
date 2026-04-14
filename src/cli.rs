@@ -50,6 +50,10 @@ pub struct FailureFilter {
     #[arg(long, conflicts_with = "maintainer")]
     pub no_maintainer: bool,
 
+    /// Show only builds that are newly failing (were passing in the previous eval)
+    #[arg(long)]
+    pub newly_failing: bool,
+
     /// Export as CSV to FILE instead of displaying the table
     #[arg(long, value_name = "FILE")]
     pub export: Option<String>,

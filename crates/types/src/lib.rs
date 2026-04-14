@@ -36,4 +36,7 @@ pub struct FailureItem {
     /// GitHub handles of package maintainers (empty if none)
     pub maintainers: Vec<String>,
     pub hydra_url: String,
+    /// True if this build was passing in the previous eval (new regression)
+    #[serde(default)]
+    pub newly_failing: bool,
 }

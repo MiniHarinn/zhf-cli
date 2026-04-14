@@ -19,6 +19,8 @@ pub struct Build {
     pub hydra_id: u64,
     pub status: BuildStatus,
     pub is_nixos: bool,
+    /// True if this build was passing in the previous eval (newly failing regression)
+    pub newly_failing: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -112,6 +114,77 @@ pub fn format_timestamp(ts: u64) -> String {
 }
 
 fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build>> {
+    // Try section-aware parsing first. The Hydra eval page organises builds
+    // into named tab panes: "tabs-now-fail" (new regressions), "tabs-still-fail"
+    // (chronic), and "tabs-aborted" (aborted / timed out).
+    let now_fail = extract_section_html(html, "tabs-now-fail");
+    let still_fail = extract_section_html(html, "tabs-still-fail");
+    let aborted = extract_section_html(html, "tabs-aborted");
+
+    let sections_found = now_fail.is_some() || still_fail.is_some() || aborted.is_some();
+
+    let mut builds = if sections_found {
+        let mut v = Vec::new();
+        if let Some(s) = now_fail {
+            v.extend(parse_rows_in_section(s, is_nixos, true));
+        }
+        if let Some(s) = still_fail {
+            v.extend(parse_rows_in_section(s, is_nixos, false));
+        }
+        if let Some(s) = aborted {
+            v.extend(parse_rows_in_section(s, is_nixos, false));
+        }
+        v
+    } else {
+        // Fallback: parse whole document (no section divs — test HTML or Hydra
+        // changed its structure). All builds get newly_failing=false.
+        parse_rows_in_section(html, is_nixos, false)
+    };
+
+    // Stamp is_nixos on every build (not available inside the row parser)
+    for b in &mut builds {
+        b.is_nixos = is_nixos;
+    }
+
+    if builds.is_empty() {
+        log::warn!("parsed zero failed builds for eval {eval_id} — eval may have no failures");
+    }
+
+    Ok(builds)
+}
+
+/// Extracts the HTML content of a tab-pane `<div id="{section_id}" ...>` by
+/// tracking nesting depth, so nested divs are handled correctly.
+fn extract_section_html<'a>(html: &'a str, section_id: &str) -> Option<&'a str> {
+    let marker = format!("id=\"{section_id}\"");
+    let id_pos = html.find(&marker)?;
+    // Walk back from the id attribute to find the opening <div tag.
+    let div_start = html[..id_pos].rfind("<div")?;
+    let after_open = &html[div_start..];
+
+    let mut depth: usize = 0;
+    let mut pos = 0;
+    while pos < after_open.len() {
+        if after_open[pos..].starts_with("<div") {
+            depth += 1;
+            pos += 4;
+        } else if after_open[pos..].starts_with("</div>") {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(&after_open[..pos + "</div>".len()]);
+            }
+            pos += 6;
+        } else {
+            pos += 1;
+        }
+    }
+    None
+}
+
+/// Parses all failed-build rows within a slice of HTML, tagging each with
+/// `newly_failing`. `is_nixos` is set to `false` here and overwritten by the
+/// caller after the fact (it's not row-specific).
+fn parse_rows_in_section(html: &str, is_nixos: bool, newly_failing: bool) -> Vec<Build> {
     let mut builds = Vec::new();
 
     for row in extract_all(html, "<tr>", "</tr>") {
@@ -150,14 +223,11 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
             hydra_id,
             status,
             is_nixos,
+            newly_failing,
         });
     }
 
-    if builds.is_empty() {
-        log::warn!("parsed zero failed builds for eval {eval_id} — eval may have no failures");
-    }
-
-    Ok(builds)
+    builds
 }
 
 fn map_status(status: &str) -> Option<BuildStatus> {

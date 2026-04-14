@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
         }
         counts.total += 1;
 
-        let maintainers = maintainers_map
+        let meta = maintainers_map
             .get(&b.attrpath)
             .cloned()
             .unwrap_or_default();
@@ -106,8 +106,9 @@ async fn main() -> Result<()> {
         let item = FailureItem {
             attrpath: b.attrpath.clone(),
             platform: b.platform.clone(),
-            maintainers,
+            maintainers: meta.maintainers,
             hydra_url: format!("https://hydra.nixos.org/build/{}", b.hydra_id),
+            newly_failing: b.newly_failing,
         };
 
         match b.status {

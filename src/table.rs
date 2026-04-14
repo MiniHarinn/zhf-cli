@@ -18,6 +18,8 @@ struct StatsRow {
 
 #[derive(Tabled)]
 struct FailureRow {
+    #[tabled(rename = "New")]
+    newly_failing: String,
     #[tabled(rename = "Attrpath")]
     attrpath: String,
     #[tabled(rename = "Platform")]
@@ -103,6 +105,11 @@ pub fn print_failures(entries: &[FailureEntry]) {
     let rows: Vec<FailureRow> = entries
         .iter()
         .map(|e| FailureRow {
+            newly_failing: if e.item.newly_failing {
+                style_text("NEW", Style::new().yellow().bold())
+            } else {
+                String::new()
+            },
             attrpath: style_text(&e.item.attrpath, Style::new().cyan()),
             platform: platform(&e.item.platform),
             maintainers: if e.item.maintainers.is_empty() {
@@ -130,14 +137,17 @@ pub fn print_failures(entries: &[FailureEntry]) {
 
 pub fn export_csv(entries: &[FailureEntry], dest: &str) -> Result<()> {
     let mut wtr = csv::Writer::from_path(dest)?;
-    wtr.write_record(["Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind"])?;
+    wtr.write_record(["Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind", "New"])?;
     for e in entries {
+        let maintainers = e.item.maintainers.join(",");
+        let newly_failing = if e.item.newly_failing { "true" } else { "false" };
         wtr.write_record([
-            &e.item.attrpath,
-            &e.item.platform,
-            &e.item.maintainers.join(","),
-            &e.item.hydra_url,
+            e.item.attrpath.as_str(),
+            e.item.platform.as_str(),
+            maintainers.as_str(),
+            e.item.hydra_url.as_str(),
             e.kind,
+            newly_failing,
         ])?;
     }
     wtr.flush()?;

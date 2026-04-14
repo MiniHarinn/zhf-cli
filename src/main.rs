@@ -54,6 +54,11 @@ fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter) -> Result<()>
         entries.retain(|e| e.item.maintainers.is_empty());
     }
 
+    // Apply newly-failing filter
+    if filter.newly_failing {
+        entries.retain(|e| e.item.newly_failing);
+    }
+
     if let Some(dest) = filter.export {
         table::export_csv(&entries, &dest)?;
     } else {
