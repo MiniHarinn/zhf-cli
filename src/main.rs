@@ -9,6 +9,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if !cli.no_pager {
+        // Force ANSI color output — owo-colors detects the pager pipe as
+        // non-TTY and strips colors otherwise.
+        unsafe { std::env::set_var("CLICOLOR_FORCE", "1") };
         pager::Pager::with_default_pager("less -R").setup();
     }
 
