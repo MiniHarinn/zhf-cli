@@ -52,14 +52,8 @@ pub async fn get_latest_eval(client: &Client, project: &str, jobset: &str) -> Re
 
     // latest-eval returns a 302. reqwest follows redirects by default, so we
     // land on /eval/{id} and get the JSON straight away.
-    let eval: HydraEval = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let text = fetch_with_retry(client, &url, "application/json").await?;
+    let eval: HydraEval = serde_json::from_str(&text)?;
 
     let nixpkgs_commit = eval
         .jobsetevalinputs
@@ -84,14 +78,8 @@ pub async fn get_latest_eval(client: &Client, project: &str, jobset: &str) -> Re
 pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> Result<Vec<Build>> {
     log::info!("Fetching builds for eval {eval_id} (is_nixos={is_nixos})…");
 
-    let html = client
-        .get(format!("https://hydra.nixos.org/eval/{eval_id}?full=1"))
-        .header("Accept", "text/html")
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+    let url = format!("https://hydra.nixos.org/eval/{eval_id}?full=1");
+    let html = fetch_with_retry(client, &url, "text/html").await?;
 
     let builds = parse_eval_html(&html, is_nixos, eval_id)?;
 
@@ -100,6 +88,40 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
         builds.len()
     );
     Ok(builds)
+}
+
+// ── Retry helper ──────────────────────────────────────────────────────────
+
+/// Fetch a URL, retrying up to 5 times with exponential back-off (1 s, 2 s, 4 s, …).
+/// Returns the response body as a `String`.
+async fn fetch_with_retry(client: &Client, url: &str, accept: &str) -> Result<String> {
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let result: std::result::Result<String, reqwest::Error> = async {
+            client
+                .get(url)
+                .header("Accept", accept)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await
+        }
+        .await;
+
+        match result {
+            Ok(text) => return Ok(text),
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                let delay = 1u64 << (attempt - 1); // 1, 2, 4, 8 s
+                log::warn!(
+                    "Request failed (attempt {attempt}/{MAX_ATTEMPTS}): {e}; retrying in {delay}s…"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    unreachable!()
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
