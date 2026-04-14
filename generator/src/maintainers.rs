@@ -48,24 +48,20 @@ pub async fn resolve_all(
 
 /// Runs `nix eval --json` to get the maintainers list for a single attribute.
 async fn eval_maintainers(nix_attr: &str, commit: &str, is_nixos: bool) -> Vec<String> {
-    let (nix_file, attr) = if is_nixos {
-        (
-            "<nixpkgs>/nixos/release-combined.nix".to_string(),
-            format!("{nix_attr}.meta.maintainers"),
-        )
+    let nix_file = if is_nixos {
+        "nixpkgs/nixos/release-combined.nix"
     } else {
-        (
-            "<nixpkgs>/pkgs/top-level/release.nix".to_string(),
-            format!("{nix_attr}.meta.maintainers"),
-        )
+        "nixpkgs/pkgs/top-level/release.nix"
     };
+
+    let expr = format!("(import <{nix_file}> {{}}).{nix_attr}.meta.maintainers");
 
     let nixpkgs_url = format!(
         "nixpkgs=https://github.com/NixOS/nixpkgs/archive/{commit}.tar.gz"
     );
 
     let output = Command::new("nix")
-        .args(["eval", "--json", "-f", &nix_file, &attr])
+        .args(["eval", "--json", "--impure", "--expr", &expr])
         .env("NIX_PATH", &nixpkgs_url)
         .output()
         .await;
