@@ -7,6 +7,11 @@ use clap::Parser;
 use cli::{Cli, Command, FailsOn, JobFilter};
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if !cli.no_pager {
+        pager::Pager::with_default_pager("less -R").setup();
+    }
+
     match cli.command {
         Command::Stats => {
             let stats = fetcher::fetch_stats()?;

@@ -3,6 +3,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(name = "zhf", about = "Zero Hydra Failures CLI", version)]
 pub struct Cli {
+    /// Do not pipe output into a pager
+    #[arg(long, global = true)]
+    pub no_pager: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
