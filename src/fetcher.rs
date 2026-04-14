@@ -5,7 +5,7 @@ use crate::cli::{JobFilter, FailureFilter};
 
 /// Base URL for the published GitHub Pages data.
 /// Override at runtime with the ZHF_DATA_URL env variable (useful for local testing).
-const DEFAULT_BASE_URL: &str = "https://moment.github.io/zhf";
+const DEFAULT_BASE_URL: &str = "https://zhf.harinn.dev";
 
 fn base_url() -> String {
     std::env::var("ZHF_DATA_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
