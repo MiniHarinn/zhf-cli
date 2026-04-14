@@ -11,6 +11,8 @@ use crate::hydra::Build;
 const DEFAULT_PARALLEL_NIX_EVALS: usize = 2;
 /// Number of attrpaths to resolve in a single `nix eval` invocation.
 const BATCH_SIZE: usize = 50;
+/// Number of completed batches between progress updates.
+const PROGRESS_REPORT_EVERY_BATCHES: usize = 20;
 
 /// Package metadata resolved via `nix eval`.
 #[derive(Default, Clone)]
@@ -51,6 +53,7 @@ pub async fn resolve_all(
 
     let total = unique.len();
     let completed = Arc::new(AtomicUsize::new(0));
+    let completed_batches = Arc::new(AtomicUsize::new(0));
     let sem = Arc::new(Semaphore::new(parallel_nix_evals));
     let mut handles = Vec::new();
 
@@ -69,12 +72,16 @@ pub async fn resolve_all(
             let commit = commit.to_string();
             let sem = sem.clone();
             let completed = completed.clone();
+            let completed_batches = completed_batches.clone();
 
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await.ok()?;
                 let result = eval_meta_batch(&chunk, &commit, is_nixos).await;
                 let done = completed.fetch_add(chunk.len(), Ordering::Relaxed) + chunk.len();
-                log::info!("Maintainers: {done}/{total} attrs resolved");
+                let batch = completed_batches.fetch_add(1, Ordering::Relaxed) + 1;
+                if done >= total || batch % PROGRESS_REPORT_EVERY_BATCHES == 0 {
+                    log::info!("Maintainers: {done}/{total} attrs resolved");
+                }
                 Some(result)
             }));
         }
