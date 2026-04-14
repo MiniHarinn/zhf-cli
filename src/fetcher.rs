@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use zhf_types::FailureItem;
 
-use crate::cli::{JobFilter, FailureFilter};
+use crate::cli::{FailureFilter, JobFilter};
 
 /// Base URL for the published GitHub Pages data.
 /// Override at runtime with the ZHF_DATA_URL env variable (useful for local testing).
@@ -14,10 +14,11 @@ fn base_url() -> String {
 // Re-export the shared types so the rest of the crate can import from here
 pub use zhf_types::IndexJson as Stats;
 
-/// A failure item annotated with its kind for display purposes.
+/// A failure item annotated with its kind and source channel for display purposes.
 pub struct FailureEntry {
     pub item: FailureItem,
     pub kind: &'static str,
+    pub channel: String,
 }
 
 fn fetch_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
@@ -40,29 +41,42 @@ pub fn fetch_stats() -> Result<Stats> {
     fetch_json("data/index.json")
 }
 
+/// Maps a "project:channel" string to a file slug, warning on unknown values.
+fn channel_to_slug(spec: &str) -> Option<&'static str> {
+    match spec {
+        "nixos:unstable"      => Some("nixos_unstable"),
+        "nixos:staging"       => Some("nixos_staging"),
+        "nixpkgs:unstable"    => Some("nixpkgs_unstable"),
+        "nixpkgs:staging-next" => Some("nixpkgs_staging_next"),
+        other => {
+            eprintln!("warning: unknown channel {other:?} — valid values: nixos:unstable, nixos:staging, nixpkgs:unstable, nixpkgs:staging-next");
+            None
+        }
+    }
+}
+
 pub fn fetch_failures(job_filter: JobFilter, filter: &FailureFilter) -> Result<Vec<FailureEntry>> {
-    // Determine which jobset files to load based on --nixpkgs / --nixos flags.
-    // Loading only the needed file halves fetch time in the common filtered case.
-    let jobsets: &[&str] = if filter.nixpkgs {
-        &["nixpkgs"]
-    } else if filter.nixos {
-        &["nixos"]
-    } else {
-        &["nixpkgs", "nixos"]
-    };
+    let slugs: Vec<(&'static str, String)> = filter.channel
+        .iter()
+        .filter_map(|spec| channel_to_slug(spec).map(|slug| (slug, spec.clone())))
+        .collect();
 
     let kinds: &[(&str, &'static str)] = match job_filter {
-        JobFilter::Direct => &[("direct", "direct")],
+        JobFilter::Direct   => &[("direct", "direct")],
         JobFilter::Indirect => &[("indirect", "indirect")],
-        JobFilter::All => &[("direct", "direct"), ("indirect", "indirect")],
+        JobFilter::All      => &[("direct", "direct"), ("indirect", "indirect")],
     };
 
     let mut entries = Vec::new();
-    for jobset in jobsets {
+    for (slug, channel) in slugs {
         for (kind_slug, kind_label) in kinds {
-            let path = format!("data/{kind_slug}_{jobset}.json");
+            let path = format!("data/{kind_slug}_{slug}.json");
             let items: Vec<FailureItem> = fetch_json(&path)?;
-            entries.extend(items.into_iter().map(|item| FailureEntry { item, kind: kind_label }));
+            entries.extend(items.into_iter().map(|item| FailureEntry {
+                item,
+                kind: kind_label,
+                channel: channel.clone(),
+            }));
         }
     }
     Ok(entries)

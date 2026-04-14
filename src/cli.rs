@@ -34,13 +34,15 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct FailureFilter {
-    /// Filter to nixpkgs.* attrpaths only
-    #[arg(long, conflicts_with = "nixos")]
-    pub nixpkgs: bool,
-
-    /// Filter to nixos.* attrpaths only
-    #[arg(long, conflicts_with = "nixpkgs")]
-    pub nixos: bool,
+    /// Channels to query, comma-separated (e.g. nixos:unstable,nixpkgs:staging-next).
+    /// Valid: nixos:unstable, nixos:staging, nixpkgs:unstable, nixpkgs:staging-next
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "nixos:unstable,nixpkgs:unstable",
+        value_name = "PROJECT:CHANNEL"
+    )]
+    pub channel: Vec<String>,
 
     /// Filter by platform
     #[arg(long, value_enum, default_value = "all")]

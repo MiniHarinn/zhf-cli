@@ -22,31 +22,27 @@ pub struct MetaInfo {
 
 /// Resolves package metadata for all failed builds in parallel.
 ///
-/// Deduplicates by attrpath (maintainers don't vary by platform), then batches
-/// multiple attrpaths into a single `nix eval` call to amortize nixpkgs import cost.
+/// All builds in a single call share the same nixpkgs `commit` (one per channel).
+/// Deduplicates by attrpath, then batches multiple attrpaths into a single `nix eval`
+/// call to amortize nixpkgs import cost.
 ///
 /// Returns a map of `attrpath → MetaInfo`.
-pub async fn resolve_all(
-    builds: &[Build],
-    nixos_commit: &str,
-    nixpkgs_commit: &str,
-) -> HashMap<String, MetaInfo> {
+pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, MetaInfo> {
     let parallel_nix_evals = maintainer_eval_concurrency();
 
     // Deduplicate: one nix eval per unique attrpath (maintainers are per-package, not per-platform)
-    let mut unique: HashMap<&str, (&str, &str, bool)> = HashMap::new();
+    let mut unique: HashMap<&str, (&str, bool)> = HashMap::new();
     for build in builds {
-        unique.entry(build.attrpath.as_str()).or_insert_with(|| {
-            let commit = if build.is_nixos { nixos_commit } else { nixpkgs_commit };
-            (build.nix_attr.as_str(), commit, build.is_nixos)
-        });
+        unique
+            .entry(build.attrpath.as_str())
+            .or_insert((build.nix_attr.as_str(), build.is_nixos));
     }
 
-    // Group by (commit, is_nixos) so each batch shares a single nixpkgs import
-    let mut groups: HashMap<(&str, bool), Vec<(&str, &str)>> = HashMap::new();
-    for (attrpath, (nix_attr, commit, is_nixos)) in &unique {
+    // Group by is_nixos so each batch shares a single nixpkgs import (nix_file differs)
+    let mut groups: HashMap<bool, Vec<(&str, &str)>> = HashMap::new();
+    for (attrpath, (nix_attr, is_nixos)) in &unique {
         groups
-            .entry((commit, *is_nixos))
+            .entry(*is_nixos)
             .or_default()
             .push((attrpath, nix_attr));
     }
@@ -63,7 +59,7 @@ pub async fn resolve_all(
         BATCH_SIZE
     );
 
-    for ((commit, is_nixos), attrs) in groups {
+    for (is_nixos, attrs) in groups {
         for chunk in attrs.chunks(BATCH_SIZE) {
             let chunk: Vec<(String, String)> = chunk
                 .iter()

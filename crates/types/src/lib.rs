@@ -1,14 +1,19 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
-/// Top-level stats — fetched by `zhf stats`
+/// Top-level index — fetched by `zhf stats`
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexJson {
     pub generated_at: String,
-    /// nixos/unstable evaluation (NixOS tests/modules)
-    pub nixos_eval: EvalInfo,
-    /// nixpkgs/unstable evaluation (all nixpkgs packages)
-    pub nixpkgs_eval: EvalInfo,
-    pub counts: FailureCounts,
+    /// Per-channel data, keyed by slug (e.g. "nixos_unstable", "nixpkgs_staging_next")
+    pub channels: HashMap<String, ChannelInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChannelInfo {
+    pub eval: EvalInfo,
+    pub direct_counts: FailureCounts,
+    pub indirect_counts: FailureCounts,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -17,7 +22,7 @@ pub struct EvalInfo {
     pub time: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FailureCounts {
     pub aarch64_darwin: u32,
     pub aarch64_linux: u32,

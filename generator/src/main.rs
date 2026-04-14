@@ -3,9 +3,23 @@ mod maintainers;
 
 use anyhow::Result;
 use hydra::BuildStatus;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use zhf_types::{EvalInfo, FailureCounts, FailureItem, IndexJson};
+use zhf_types::{ChannelInfo, EvalInfo, FailureCounts, FailureItem, IndexJson};
+
+struct ChannelSpec {
+    project: &'static str,
+    jobset: &'static str,
+    slug: &'static str,
+    is_nixos: bool,
+}
+
+const CHANNELS: &[ChannelSpec] = &[
+    ChannelSpec { project: "nixos",   jobset: "unstable",     slug: "nixos_unstable",       is_nixos: true  },
+    ChannelSpec { project: "nixos",   jobset: "staging",      slug: "nixos_staging",        is_nixos: true  },
+    ChannelSpec { project: "nixpkgs", jobset: "unstable",     slug: "nixpkgs_unstable",     is_nixos: false },
+    ChannelSpec { project: "nixpkgs", jobset: "staging-next", slug: "nixpkgs_staging_next", is_nixos: false },
+];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,51 +35,87 @@ async fn main() -> Result<()> {
         .tcp_keepalive(std::time::Duration::from_secs(30))
         .build()?;
 
-    // ── 1. Fetch latest finished eval for each jobset ──────────────────────
-    log::info!("Fetching latest evals…");
-    let (nixos_eval, nixpkgs_eval) = tokio::try_join!(
-        hydra::get_latest_eval(&client, "nixos", "unstable"),
-        hydra::get_latest_eval(&client, "nixpkgs", "unstable"),
-    )?;
-    log::info!(
-        "nixos/unstable eval: {} | nixpkgs/unstable eval: {}",
-        nixos_eval.id,
-        nixpkgs_eval.id
-    );
+    // ── 1. Fetch latest finished eval for all channels ─────────────────────
+    log::info!("Fetching latest evals for {} channels…", CHANNELS.len());
+    let evals: Vec<hydra::EvalInfo> = futures::future::try_join_all(
+        CHANNELS.iter().map(|ch| hydra::get_latest_eval(&client, ch.project, ch.jobset))
+    ).await?;
+    for (ch, eval) in CHANNELS.iter().zip(&evals) {
+        log::info!("{}/{} eval: {}", ch.project, ch.jobset, eval.id);
+    }
 
-    // ── 2. Fetch builds from both evals ────────────────────────────────────
-    log::info!("Fetching builds…");
-    let (nixos_builds, nixpkgs_builds) = tokio::try_join!(
-        hydra::get_eval_builds(&client, nixos_eval.id, true),
-        hydra::get_eval_builds(&client, nixpkgs_eval.id, false),
-    )?;
+    // ── 2. Fetch builds for all channels ───────────────────────────────────
+    log::info!("Fetching builds for all channels…");
+    let builds_per_channel: Vec<Vec<hydra::Build>> = futures::future::try_join_all(
+        CHANNELS.iter().zip(&evals).map(|(ch, eval)| {
+            hydra::get_eval_builds(&client, eval.id, ch.is_nixos)
+        })
+    ).await?;
 
-    let all_builds: Vec<_> = nixos_builds.into_iter().chain(nixpkgs_builds).collect();
-    log::info!("Total failed builds: {}", all_builds.len());
+    fs::create_dir_all("output/data")?;
 
-    // ── 3. Resolve maintainers ─────────────────────────────────────────────
-    log::info!("Resolving maintainers (this may take a while)…");
-    let maintainers_map = maintainers::resolve_all(
-        &all_builds,
-        &nixos_eval.nixpkgs_commit,
-        &nixpkgs_eval.nixpkgs_commit,
-    )
-    .await;
-    log::info!("Resolved maintainers for {} builds", maintainers_map.len());
+    // ── 3. Per-channel: resolve maintainers, categorize, write files ───────
+    let mut channel_index: HashMap<String, ChannelInfo> = HashMap::new();
 
-    // ── 4. Build output JSON ───────────────────────────────────────────────
-    let mut counts = FailureCounts {
-        aarch64_darwin: 0,
-        aarch64_linux: 0,
-        x86_64_darwin: 0,
-        x86_64_linux: 0,
-        i686_linux: 0,
-        total: 0,
+    for (i, ch) in CHANNELS.iter().enumerate() {
+        let eval = &evals[i];
+        let builds = &builds_per_channel[i];
+
+        log::info!(
+            "Resolving maintainers for {}/{} ({} builds)…",
+            ch.project, ch.jobset, builds.len()
+        );
+        let maintainers_map = maintainers::resolve_all(builds, &eval.nixpkgs_commit).await;
+
+        let (direct, indirect, direct_counts, indirect_counts) =
+            categorize_builds(builds, &maintainers_map);
+
+        log::info!(
+            "{}/{}: direct={} indirect={}",
+            ch.project, ch.jobset, direct.len(), indirect.len()
+        );
+
+        fs::write(
+            format!("output/data/direct_{}.json", ch.slug),
+            serde_json::to_string_pretty(&direct)?,
+        )?;
+        fs::write(
+            format!("output/data/indirect_{}.json", ch.slug),
+            serde_json::to_string_pretty(&indirect)?,
+        )?;
+
+        channel_index.insert(
+            ch.slug.to_string(),
+            ChannelInfo {
+                eval: EvalInfo { id: eval.id, time: eval.time.clone() },
+                direct_counts,
+                indirect_counts,
+            },
+        );
+    }
+
+    // ── 4. Write index.json ────────────────────────────────────────────────
+    let index = IndexJson {
+        generated_at: hydra::now_formatted(),
+        channels: channel_index,
     };
+    fs::write("output/data/index.json", serde_json::to_string_pretty(&index)?)?;
 
-    // Dedup by attrpath — prefer Direct over Indirect.
+    log::info!("Done.");
+    Ok(())
+}
+
+/// Deduplicates builds by attrpath (preferring Direct over Indirect) and
+/// categorizes them into direct/indirect lists with per-kind platform counts.
+fn categorize_builds(
+    builds: &[hydra::Build],
+    maintainers_map: &HashMap<String, maintainers::MetaInfo>,
+) -> (Vec<FailureItem>, Vec<FailureItem>, FailureCounts, FailureCounts) {
+    let mut direct_counts = FailureCounts::default();
+    let mut indirect_counts = FailureCounts::default();
+
     // Pass 1: collect attrpaths that have at least one Direct failure.
-    let has_direct: HashSet<&str> = all_builds
+    let has_direct: HashSet<&str> = builds
         .iter()
         .filter(|b| b.status == BuildStatus::Direct)
         .map(|b| b.attrpath.as_str())
@@ -73,19 +123,22 @@ async fn main() -> Result<()> {
 
     // Pass 2: emit each attrpath once, skipping Indirect when a Direct exists.
     let mut emitted: HashSet<&str> = HashSet::new();
-    let mut direct_nixpkgs: Vec<FailureItem> = Vec::new();
-    let mut direct_nixos: Vec<FailureItem> = Vec::new();
-    let mut indirect_nixpkgs: Vec<FailureItem> = Vec::new();
-    let mut indirect_nixos: Vec<FailureItem> = Vec::new();
+    let mut direct_items: Vec<FailureItem> = Vec::new();
+    let mut indirect_items: Vec<FailureItem> = Vec::new();
 
-    for b in &all_builds {
+    for b in builds {
         if b.status == BuildStatus::Indirect && has_direct.contains(b.attrpath.as_str()) {
-            continue; // Direct entry will cover this
+            continue;
         }
         if !emitted.insert(b.attrpath.as_str()) {
-            continue; // already emitted
+            continue;
         }
 
+        let counts = if b.status == BuildStatus::Direct {
+            &mut direct_counts
+        } else {
+            &mut indirect_counts
+        };
         match b.platform.as_str() {
             "aarch64-darwin" => counts.aarch64_darwin += 1,
             "aarch64-linux"  => counts.aarch64_linux += 1,
@@ -108,43 +161,11 @@ async fn main() -> Result<()> {
             hydra_id: b.hydra_id,
         };
 
-        match (b.status, b.is_nixos) {
-            (BuildStatus::Direct, false)   => direct_nixpkgs.push(item),
-            (BuildStatus::Direct, true)    => direct_nixos.push(item),
-            (BuildStatus::Indirect, false) => indirect_nixpkgs.push(item),
-            (BuildStatus::Indirect, true)  => indirect_nixos.push(item),
+        match b.status {
+            BuildStatus::Direct   => direct_items.push(item),
+            BuildStatus::Indirect => indirect_items.push(item),
         }
     }
 
-    let index = IndexJson {
-        generated_at: hydra::now_formatted(),
-        nixos_eval: EvalInfo {
-            id: nixos_eval.id,
-            time: nixos_eval.time,
-        },
-        nixpkgs_eval: EvalInfo {
-            id: nixpkgs_eval.id,
-            time: nixpkgs_eval.time,
-        },
-        counts,
-    };
-
-    // ── 5. Write output files ──────────────────────────────────────────────
-    fs::create_dir_all("output/data")?;
-
-    fs::write("output/data/index.json",           serde_json::to_string_pretty(&index)?)?;
-    fs::write("output/data/direct_nixpkgs.json",  serde_json::to_string_pretty(&direct_nixpkgs)?)?;
-    fs::write("output/data/direct_nixos.json",    serde_json::to_string_pretty(&direct_nixos)?)?;
-    fs::write("output/data/indirect_nixpkgs.json",serde_json::to_string_pretty(&indirect_nixpkgs)?)?;
-    fs::write("output/data/indirect_nixos.json",  serde_json::to_string_pretty(&indirect_nixos)?)?;
-
-    log::info!(
-        "Done. direct_nixpkgs={} direct_nixos={} indirect_nixpkgs={} indirect_nixos={} total={}",
-        direct_nixpkgs.len(),
-        direct_nixos.len(),
-        indirect_nixpkgs.len(),
-        indirect_nixos.len(),
-        index.counts.total
-    );
-    Ok(())
+    (direct_items, indirect_items, direct_counts, indirect_counts)
 }

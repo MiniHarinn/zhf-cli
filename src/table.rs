@@ -8,6 +8,14 @@ use zhf_types::IndexJson;
 
 use crate::fetcher::FailureEntry;
 
+// Display order and human-readable labels for channels
+const CHANNEL_ORDER: &[(&str, &str)] = &[
+    ("nixos_unstable",       "nixos/unstable"),
+    ("nixos_staging",        "nixos/staging"),
+    ("nixpkgs_unstable",     "nixpkgs/unstable"),
+    ("nixpkgs_staging_next", "nixpkgs/staging-next"),
+];
+
 #[derive(Tabled)]
 struct StatsRow {
     #[tabled(rename = "Field")]
@@ -18,6 +26,8 @@ struct StatsRow {
 
 #[derive(Tabled)]
 struct FailureRow {
+    #[tabled(rename = "Channel")]
+    channel: String,
     #[tabled(rename = "Attrpath")]
     attrpath: String,
     #[tabled(rename = "Platform")]
@@ -31,54 +41,58 @@ struct FailureRow {
 }
 
 pub fn print_stats(s: &IndexJson) {
-    let nixos_eval = format!("#{}", s.nixos_eval.id);
-    let nixpkgs_eval = format!("#{}", s.nixpkgs_eval.id);
+    let mut rows = vec![StatsRow {
+        field: label("Generated At"),
+        value: style_text(&s.generated_at, Style::new().bright_black()),
+    }];
 
-    let mut rows = vec![
-        StatsRow {
-            field: label("Generated At"),
-            value: style_text(&s.generated_at, Style::new().bright_black()),
-        },
-        StatsRow {
-            field: label("nixos/unstable Eval"),
-            value: format!(
-                "{} {} {}",
-                style_text(&nixos_eval, Style::new().green().bold()),
-                style_text("on", Style::new().bright_black()),
-                style_text(&s.nixos_eval.time, Style::new().green())
-            ),
-        },
-        StatsRow {
-            field: label("nixpkgs/unstable Eval"),
-            value: format!(
-                "{} {} {}",
-                style_text(&nixpkgs_eval, Style::new().blue().bold()),
-                style_text("on", Style::new().bright_black()),
-                style_text(&s.nixpkgs_eval.time, Style::new().blue())
-            ),
-        },
-    ];
+    for (slug, display_name) in CHANNEL_ORDER {
+        let Some(ch) = s.channels.get(*slug) else { continue };
 
-    let c = &s.counts;
-    let platform_counts = [
-        ("aarch64-darwin", c.aarch64_darwin),
-        ("aarch64-linux", c.aarch64_linux),
-        ("x86_64-darwin", c.x86_64_darwin),
-        ("x86_64-linux", c.x86_64_linux),
-        ("i686-linux", c.i686_linux),
-    ];
-    for (plat, n) in platform_counts {
-        if n > 0 {
-            rows.push(StatsRow {
-                field: label(&format!("Failing on {plat}")),
-                value: count(n),
-            });
+        // Blank separator between channels (except before the first)
+        if rows.len() > 1 {
+            rows.push(StatsRow { field: String::new(), value: String::new() });
         }
+
+        let eval_id = format!("#{}", ch.eval.id);
+        rows.push(StatsRow {
+            field: label(&format!("{display_name} Eval")),
+            value: format!(
+                "{} {} {}",
+                style_text(&eval_id, Style::new().green().bold()),
+                style_text("on", Style::new().bright_black()),
+                style_text(&ch.eval.time, Style::new().green())
+            ),
+        });
+
+        let platform_counts = [
+            ("aarch64-darwin", ch.direct_counts.aarch64_darwin, ch.indirect_counts.aarch64_darwin),
+            ("aarch64-linux",  ch.direct_counts.aarch64_linux,  ch.indirect_counts.aarch64_linux),
+            ("x86_64-darwin",  ch.direct_counts.x86_64_darwin,  ch.indirect_counts.x86_64_darwin),
+            ("x86_64-linux",   ch.direct_counts.x86_64_linux,   ch.indirect_counts.x86_64_linux),
+            ("i686-linux",     ch.direct_counts.i686_linux,      ch.indirect_counts.i686_linux),
+        ];
+        for (plat, direct_n, indirect_n) in platform_counts {
+            if direct_n > 0 || indirect_n > 0 {
+                rows.push(StatsRow {
+                    field: label(&format!("Failing on {plat}")),
+                    value: format!(
+                        "{} direct  {} indirect",
+                        count(direct_n),
+                        count(indirect_n)
+                    ),
+                });
+            }
+        }
+        rows.push(StatsRow {
+            field: label("Total Direct"),
+            value: count(ch.direct_counts.total),
+        });
+        rows.push(StatsRow {
+            field: label("Total Indirect"),
+            value: count(ch.indirect_counts.total),
+        });
     }
-    rows.push(StatsRow {
-        field: label("Total Failed Builds"),
-        value: count(c.total),
-    });
 
     let table = Table::new(rows)
         .with(TableStyle::rounded())
@@ -103,6 +117,7 @@ pub fn print_failures(entries: &[FailureEntry]) {
     let rows: Vec<FailureRow> = entries
         .iter()
         .map(|e| FailureRow {
+            channel: style_text(&e.channel, Style::new().bright_black()),
             attrpath: style_text(&e.item.attrpath, Style::new().cyan()),
             platform: platform(&e.item.platform),
             maintainers: if e.item.maintainers.is_empty() {
@@ -143,10 +158,11 @@ pub fn print_failures(entries: &[FailureEntry]) {
 
 pub fn export_csv(entries: &[FailureEntry], dest: &str) -> Result<()> {
     let mut wtr = csv::Writer::from_path(dest)?;
-    wtr.write_record(["Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind"])?;
+    wtr.write_record(["Channel", "Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind"])?;
     for e in entries {
         let maintainers = e.item.maintainers.join(",");
         wtr.write_record([
+            e.channel.as_str(),
             e.item.attrpath.as_str(),
             e.item.platform.as_str(),
             maintainers.as_str(),
