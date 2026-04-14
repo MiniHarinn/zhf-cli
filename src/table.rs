@@ -4,8 +4,9 @@ use tabled::{
     settings::{object::Rows, Alignment, Modify, Style as TableStyle},
     Table, Tabled,
 };
+use zhf_types::IndexJson;
 
-use crate::scraper::{FailureItem, PageMeta, Stats};
+use crate::fetcher::FailureEntry;
 
 #[derive(Tabled)]
 struct StatsRow {
@@ -21,108 +22,63 @@ struct FailureRow {
     attrpath: String,
     #[tabled(rename = "Platform")]
     platform: String,
-    #[tabled(rename = "Maintainer")]
-    maintainer: String,
+    #[tabled(rename = "Maintainers")]
+    maintainers: String,
     #[tabled(rename = "Hydra Build")]
     hydra_url: String,
     #[tabled(rename = "Kind")]
     kind: String,
 }
 
-#[derive(Tabled)]
-struct ProblematicRow {
-    #[tabled(rename = "Job")]
-    attrpath: String,
-    #[tabled(rename = "Platform")]
-    platform: String,
-    #[tabled(rename = "Dependants")]
-    dependants: String,
-    #[tabled(rename = "Hydra Build")]
-    hydra_url: String,
-}
+pub fn print_stats(s: &IndexJson) {
+    let nixos_eval = format!("#{}", s.nixos_eval.id);
+    let nixpkgs_eval = format!("#{}", s.nixpkgs_eval.id);
 
-pub fn print_stats(s: &Stats) {
-    let linux_eval = format!("#{}", s.linux_eval);
-    let darwin_eval = format!("#{}", s.darwin_eval);
-
-    let rows = vec![
+    let mut rows = vec![
         StatsRow {
-            field: label("Target"),
-            value: style_text(&s.target, Style::new().cyan()),
+            field: label("Generated At"),
+            value: style_text(&s.generated_at, Style::new().bright_black()),
         },
         StatsRow {
-            field: label("Last Check"),
-            value: style_text(&s.last_check, Style::new().bright_black()),
-        },
-        StatsRow {
-            field: label("Latest Linux Evaluation"),
+            field: label("nixos/unstable Eval"),
             value: format!(
                 "{} {} {}",
-                style_text(&linux_eval, Style::new().green().bold()),
+                style_text(&nixos_eval, Style::new().green().bold()),
                 style_text("on", Style::new().bright_black()),
-                style_text(&s.linux_eval_time, Style::new().green())
+                style_text(&s.nixos_eval.time, Style::new().green())
             ),
         },
         StatsRow {
-            field: label("Latest Darwin Evaluation"),
+            field: label("nixpkgs/unstable Eval"),
             value: format!(
                 "{} {} {}",
-                style_text(&darwin_eval, Style::new().blue().bold()),
+                style_text(&nixpkgs_eval, Style::new().blue().bold()),
                 style_text("on", Style::new().bright_black()),
-                style_text(&s.darwin_eval_time, Style::new().blue())
+                style_text(&s.nixpkgs_eval.time, Style::new().blue())
             ),
-        },
-        StatsRow {
-            field: label("Failing on aarch64-darwin"),
-            value: count(s.aarch64_darwin),
-        },
-        StatsRow {
-            field: label("Failing on aarch64-linux"),
-            value: count(s.aarch64_linux),
-        },
-        StatsRow {
-            field: label("Failing on x86_64-darwin"),
-            value: count(s.x86_64_darwin),
-        },
-        StatsRow {
-            field: label("Failing on x86_64-linux"),
-            value: count(s.x86_64_linux),
-        },
-        StatsRow {
-            field: label("Total Failed Builds"),
-            value: count(s.total),
         },
     ];
 
-    let table = Table::new(rows)
-        .with(TableStyle::rounded())
-        .with(Modify::new(Rows::first()).with(Alignment::center()))
-        .to_string();
-
-    println!("{table}");
-}
-
-pub fn print_problematic(items: &[FailureItem], meta: &PageMeta) {
-    if items.is_empty() {
-        println!(
-            "{}",
-            style_text(
-                "No problematic dependencies found.",
-                Style::new().green().bold()
-            )
-        );
-        return;
+    let c = &s.counts;
+    let platform_counts = [
+        ("aarch64-darwin", c.aarch64_darwin),
+        ("aarch64-linux", c.aarch64_linux),
+        ("x86_64-darwin", c.x86_64_darwin),
+        ("x86_64-linux", c.x86_64_linux),
+        ("i686-linux", c.i686_linux),
+    ];
+    for (plat, n) in platform_counts {
+        if n > 0 {
+            rows.push(StatsRow {
+                field: label(&format!("Failing on {plat}")),
+                value: count(n),
+            });
+        }
     }
-
-    let rows: Vec<ProblematicRow> = items
-        .iter()
-        .map(|i| ProblematicRow {
-            attrpath: style_text(&i.attrpath, Style::new().cyan()),
-            platform: platform(&i.platform),
-            dependants: i.dependants.map(count).unwrap_or_else(|| "-".into()),
-            hydra_url: style_text(&i.hydra_url, Style::new().underline().blue()),
-        })
-        .collect();
+    rows.push(StatsRow {
+        field: label("Total Failed Builds"),
+        value: count(c.total),
+    });
 
     let table = Table::new(rows)
         .with(TableStyle::rounded())
@@ -130,11 +86,10 @@ pub fn print_problematic(items: &[FailureItem], meta: &PageMeta) {
         .to_string();
 
     println!("{table}");
-    print_footer(meta, items.len());
 }
 
-pub fn print_failures(items: &[FailureItem], meta: &PageMeta) {
-    if items.is_empty() {
+pub fn print_failures(entries: &[FailureEntry]) {
+    if entries.is_empty() {
         println!(
             "{}",
             style_text(
@@ -145,18 +100,18 @@ pub fn print_failures(items: &[FailureItem], meta: &PageMeta) {
         return;
     }
 
-    let rows: Vec<FailureRow> = items
+    let rows: Vec<FailureRow> = entries
         .iter()
-        .map(|i| FailureRow {
-            attrpath: style_text(&i.attrpath, Style::new().cyan()),
-            platform: platform(&i.platform),
-            maintainer: i
-                .maintainer
-                .as_deref()
-                .map(|name| style_text(name, Style::new().magenta()))
-                .unwrap_or_else(|| style_text("-", Style::new().bright_black())),
-            hydra_url: style_text(&i.hydra_url, Style::new().underline().blue()),
-            kind: kind(i.kind),
+        .map(|e| FailureRow {
+            attrpath: style_text(&e.item.attrpath, Style::new().cyan()),
+            platform: platform(&e.item.platform),
+            maintainers: if e.item.maintainers.is_empty() {
+                style_text("-", Style::new().bright_black())
+            } else {
+                style_text(&e.item.maintainers.join(", "), Style::new().magenta())
+            },
+            hydra_url: style_text(&e.item.hydra_url, Style::new().underline().blue()),
+            kind: kind(e.kind),
         })
         .collect();
 
@@ -166,47 +121,30 @@ pub fn print_failures(items: &[FailureItem], meta: &PageMeta) {
         .to_string();
 
     println!("{table}");
-    print_footer(meta, items.len());
-}
-
-pub fn export_csv_problematic(items: &[FailureItem], dest: &str) -> Result<()> {
-    let mut wtr = csv::Writer::from_path(dest)?;
-    wtr.write_record(["Job", "Platform", "Dependants", "Hydra Build"])?;
-    for item in items {
-        wtr.write_record([
-            &item.attrpath,
-            &item.platform,
-            &item.dependants.map(|d| d.to_string()).unwrap_or_default(),
-            &item.hydra_url,
-        ])?;
-    }
-    wtr.flush()?;
     println!(
-        "{} {} {}",
-        style_text("Exported", Style::new().green().bold()),
-        count(items.len() as u32),
-        style_text(&format!("rows to {dest}"), Style::new().cyan())
+        "  {} {}",
+        style_text("Total:", Style::new().bold()),
+        count(entries.len() as u32)
     );
-    Ok(())
 }
 
-pub fn export_csv(items: &[FailureItem], dest: &str) -> Result<()> {
+pub fn export_csv(entries: &[FailureEntry], dest: &str) -> Result<()> {
     let mut wtr = csv::Writer::from_path(dest)?;
-    wtr.write_record(["Attrpath", "Platform", "Maintainer", "Hydra Build", "Kind"])?;
-    for item in items {
+    wtr.write_record(["Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind"])?;
+    for e in entries {
         wtr.write_record([
-            &item.attrpath,
-            &item.platform,
-            item.maintainer.as_deref().unwrap_or(""),
-            &item.hydra_url,
-            item.kind,
+            &e.item.attrpath,
+            &e.item.platform,
+            &e.item.maintainers.join(","),
+            &e.item.hydra_url,
+            e.kind,
         ])?;
     }
     wtr.flush()?;
     println!(
         "{} {} {}",
         style_text("Exported", Style::new().green().bold()),
-        count(items.len() as u32),
+        count(entries.len() as u32),
         style_text(&format!("rows to {dest}"), Style::new().cyan())
     );
     Ok(())
@@ -229,7 +167,7 @@ fn count(value: u32) -> String {
 
 fn platform(value: &str) -> String {
     let style = match value {
-        "aarch64-linux" | "x86_64-linux" => Style::new().green(),
+        "aarch64-linux" | "x86_64-linux" | "i686-linux" => Style::new().green(),
         "aarch64-darwin" | "x86_64-darwin" => Style::new().blue(),
         _ => Style::new().yellow(),
     };
@@ -240,24 +178,9 @@ fn kind(value: &str) -> String {
     let style = match value {
         "direct" => Style::new().red().bold(),
         "indirect" => Style::new().yellow().bold(),
-        "problematic" => Style::new().magenta().bold(),
         _ => Style::new().bold(),
     };
     style_text(value, style)
-}
-
-fn print_footer(meta: &PageMeta, total: usize) {
-    println!(
-        "  {} {}",
-        style_text("Last updated:", Style::new().bold()),
-        style_text(&meta.last_check, Style::new().bright_black())
-    );
-    println!(
-        "  {} {} {}",
-        style_text("Total:", Style::new().bold()),
-        count(total as u32),
-        style_text("entries", Style::new().bright_black())
-    );
 }
 
 fn style_text(text: &str, style: Style) -> String {

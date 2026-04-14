@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "zhf", about = "Zero Hydra Failures CLI - scrape zh.fail", version)]
+#[command(name = "zhf", about = "Zero Hydra Failures CLI", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -9,13 +9,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Show upstream status (target, evals, platform counts)
+    /// Show upstream status (evals, platform failure counts)
     Stats,
-    /// Show problematic dependencies from the homepage
-    Problematic {
-        #[arg(long, value_name = "FILE", help = "Export as CSV instead of displaying")]
-        export: Option<String>,
-    },
     /// Show all failed builds (direct + indirect)
     All {
         #[command(flatten)]
@@ -47,7 +42,7 @@ pub struct FailureFilter {
     #[arg(long, value_enum, default_value = "all")]
     pub fails_on: FailsOn,
 
-    /// Filter by maintainer name
+    /// Filter by maintainer GitHub handle
     #[arg(long, value_name = "NAME", conflicts_with = "no_maintainer")]
     pub maintainer: Option<String>,
 
@@ -73,6 +68,8 @@ pub enum FailsOn {
     Aarch64Darwin,
     #[value(name = "x86_64-darwin")]
     X8664Darwin,
+    #[value(name = "i686-linux")]
+    I686Linux,
 }
 
 #[derive(Clone, PartialEq)]
