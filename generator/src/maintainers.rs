@@ -10,9 +10,9 @@ use crate::hydra::Build;
 /// Max parallel `nix eval` processes. Each process now evaluates a batch of attrs.
 const DEFAULT_PARALLEL_NIX_EVALS: usize = 2;
 /// Number of attrpaths to resolve in a single `nix eval` invocation.
-const BATCH_SIZE: usize = 50;
+const BATCH_SIZE: usize = 10;
 /// Number of completed batches between progress updates.
-const PROGRESS_REPORT_EVERY_BATCHES: usize = 20;
+const PROGRESS_REPORT_EVERY_BATCHES: usize = 100;
 
 /// Package metadata resolved via `nix eval`.
 #[derive(Default, Clone)]
