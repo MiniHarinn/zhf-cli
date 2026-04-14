@@ -18,8 +18,6 @@ struct StatsRow {
 
 #[derive(Tabled)]
 struct FailureRow {
-    #[tabled(rename = "New")]
-    newly_failing: String,
     #[tabled(rename = "Attrpath")]
     attrpath: String,
     #[tabled(rename = "Platform")]
@@ -105,21 +103,26 @@ pub fn print_failures(entries: &[FailureEntry]) {
     let rows: Vec<FailureRow> = entries
         .iter()
         .map(|e| FailureRow {
-            newly_failing: if e.item.newly_failing {
-                style_text("NEW", Style::new().yellow().bold())
-            } else {
-                String::new()
-            },
             attrpath: style_text(&e.item.attrpath, Style::new().cyan()),
             platform: platform(&e.item.platform),
             maintainers: if e.item.maintainers.is_empty() {
                 style_text("-", Style::new().bright_black())
             } else {
-                style_text(&e.item.maintainers.join(", "), Style::new().magenta())
+                let m = &e.item.maintainers;
+                let shown = m.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                if m.len() > 2 {
+                    format!(
+                        "{} {}",
+                        style_text(&shown, Style::new().magenta()),
+                        style_text(&format!("and {} more", m.len() - 2), Style::new().bright_black()),
+                    )
+                } else {
+                    style_text(&shown, Style::new().magenta())
+                }
             },
             hydra_url: style_text(
-                &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
-                Style::new().underline().blue(),
+                &format!("#{}", e.item.hydra_id),
+                Style::new().blue(),
             ),
             kind: kind(e.kind),
         })
@@ -140,17 +143,15 @@ pub fn print_failures(entries: &[FailureEntry]) {
 
 pub fn export_csv(entries: &[FailureEntry], dest: &str) -> Result<()> {
     let mut wtr = csv::Writer::from_path(dest)?;
-    wtr.write_record(["Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind", "New"])?;
+    wtr.write_record(["Attrpath", "Platform", "Maintainers", "Hydra Build", "Kind"])?;
     for e in entries {
         let maintainers = e.item.maintainers.join(",");
-        let newly_failing = if e.item.newly_failing { "true" } else { "false" };
         wtr.write_record([
             e.item.attrpath.as_str(),
             e.item.platform.as_str(),
             maintainers.as_str(),
             &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
             e.kind,
-            newly_failing,
         ])?;
     }
     wtr.flush()?;

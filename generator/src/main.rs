@@ -110,7 +110,6 @@ async fn main() -> Result<()> {
             platform: b.platform.clone(),
             maintainers: meta.maintainers,
             hydra_id: b.hydra_id,
-            newly_failing: b.newly_failing,
         };
 
         match (b.status, b.is_nixos) {

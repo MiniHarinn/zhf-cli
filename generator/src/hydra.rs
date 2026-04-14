@@ -19,8 +19,6 @@ pub struct Build {
     pub hydra_id: u64,
     pub status: BuildStatus,
     pub is_nixos: bool,
-    /// True if this build was passing in the previous eval (newly failing regression)
-    pub newly_failing: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -126,19 +124,19 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
     let mut builds = if sections_found {
         let mut v = Vec::new();
         if let Some(s) = now_fail {
-            v.extend(parse_rows_in_section(s, is_nixos, true));
+            v.extend(parse_rows_in_section(s, is_nixos));
         }
         if let Some(s) = still_fail {
-            v.extend(parse_rows_in_section(s, is_nixos, false));
+            v.extend(parse_rows_in_section(s, is_nixos));
         }
         if let Some(s) = aborted {
-            v.extend(parse_rows_in_section(s, is_nixos, false));
+            v.extend(parse_rows_in_section(s, is_nixos));
         }
         v
     } else {
         // Fallback: parse whole document (no section divs — test HTML or Hydra
-        // changed its structure). All builds get newly_failing=false.
-        parse_rows_in_section(html, is_nixos, false)
+        // changed its structure).
+        parse_rows_in_section(html, is_nixos)
     };
 
     // Stamp is_nixos on every build (not available inside the row parser)
@@ -181,10 +179,9 @@ fn extract_section_html<'a>(html: &'a str, section_id: &str) -> Option<&'a str> 
     None
 }
 
-/// Parses all failed-build rows within a slice of HTML, tagging each with
-/// `newly_failing`. `is_nixos` is set to `false` here and overwritten by the
-/// caller after the fact (it's not row-specific).
-fn parse_rows_in_section(html: &str, is_nixos: bool, newly_failing: bool) -> Vec<Build> {
+/// Parses all failed-build rows within a slice of HTML. `is_nixos` is set to
+/// `false` here and overwritten by the caller after the fact (it's not row-specific).
+fn parse_rows_in_section(html: &str, is_nixos: bool) -> Vec<Build> {
     let mut builds = Vec::new();
 
     for row in extract_all(html, "<tr>", "</tr>") {
@@ -223,7 +220,6 @@ fn parse_rows_in_section(html: &str, is_nixos: bool, newly_failing: bool) -> Vec
             hydra_id,
             status,
             is_nixos,
-            newly_failing,
         });
     }
 
