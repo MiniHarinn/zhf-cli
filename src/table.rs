@@ -138,7 +138,7 @@ pub fn print_failures(entries: &[FailureEntry]) {
                 }
             },
             hydra_url: style_text(
-                &format!("#{}", e.item.hydra_id),
+                &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
                 Style::new().blue(),
             ),
             kind: kind(e.kind),
