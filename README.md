@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" alt="ZHF-CLI icon" width="512" />
+  <img src="assets/icon-full.svg" alt="ZHF-CLI icon" width="512" />
 </p>
 
 <div align="center">
