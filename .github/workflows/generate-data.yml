@@ -44,7 +44,7 @@ jobs:
           retry_wait_seconds: 30
           command: ./target/release/zhf-generator
         env:
-          ZHF_MAINTAINER_CONCURRENCY: 4
+          ZHF_MAINTAINER_CONCURRENCY: 2
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
