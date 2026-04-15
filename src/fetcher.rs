@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use zhf_types::FailureItem;
+use zhf_types::{FailureItem, ProblematicItem};
 
 use crate::cli::{FailureFilter, JobFilter};
 
@@ -48,6 +48,29 @@ fn channel_to_slug(spec: &str) -> Option<&'static str> {
             None
         }
     }
+}
+
+pub struct ProblematicEntry {
+    pub item: ProblematicItem,
+    pub channel: String,
+}
+
+pub fn fetch_problematic(filter: &FailureFilter) -> Result<Vec<ProblematicEntry>> {
+    let slugs: Vec<(&'static str, String)> = filter.channel
+        .iter()
+        .filter_map(|spec| channel_to_slug(spec).map(|slug| (slug, spec.clone())))
+        .collect();
+
+    let mut entries = Vec::new();
+    for (slug, channel) in slugs {
+        let path = format!("data/problematic_{slug}.json");
+        let items: Vec<ProblematicItem> = fetch_json(&path)?;
+        entries.extend(items.into_iter().map(|item| ProblematicEntry {
+            item,
+            channel: channel.clone(),
+        }));
+    }
+    Ok(entries)
 }
 
 pub fn fetch_failures(job_filter: JobFilter, filter: &FailureFilter) -> Result<Vec<FailureEntry>> {

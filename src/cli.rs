@@ -30,6 +30,15 @@ pub enum Command {
         #[command(flatten)]
         filter: FailureFilter,
     },
+    /// Show problematic dependencies (direct failures causing the most cascades)
+    Problematic {
+        #[command(flatten)]
+        filter: FailureFilter,
+
+        /// Only show dependencies blocking at least N packages
+        #[arg(long, default_value = "1", value_name = "N")]
+        min_blocked: u32,
+    },
 }
 
 #[derive(Args)]

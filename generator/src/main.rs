@@ -5,7 +5,7 @@ use anyhow::Result;
 use hydra::BuildStatus;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use zhf_types::{ChannelInfo, EvalInfo, FailureCounts, FailureItem, IndexJson};
+use zhf_types::{ChannelInfo, EvalInfo, FailureCounts, FailureItem, IndexJson, ProblematicItem};
 
 struct ChannelSpec {
     project: &'static str,
@@ -101,6 +101,14 @@ async fn main() -> Result<()> {
             ch.project, ch.jobset, direct.len(), indirect.len()
         );
 
+        let indirect_builds: Vec<&hydra::Build> = builds
+            .iter()
+            .filter(|b| b.status == BuildStatus::Indirect)
+            .collect();
+        let dep_map = hydra::resolve_failing_deps(&client, &indirect_builds).await;
+        let problematic = aggregate_problematic(&dep_map, builds, &all_maintainers);
+        log::info!("{}/{}: problematic={}", ch.project, ch.jobset, problematic.len());
+
         fs::write(
             format!("output/data/direct_{}.json", ch.slug),
             serde_json::to_string_pretty(&direct)?,
@@ -108,6 +116,10 @@ async fn main() -> Result<()> {
         fs::write(
             format!("output/data/indirect_{}.json", ch.slug),
             serde_json::to_string_pretty(&indirect)?,
+        )?;
+        fs::write(
+            format!("output/data/problematic_{}.json", ch.slug),
+            serde_json::to_string_pretty(&problematic)?,
         )?;
 
         let eval = &evals[i];
@@ -117,6 +129,7 @@ async fn main() -> Result<()> {
                 eval: EvalInfo { id: eval.id, time: eval.time.clone() },
                 direct_counts,
                 indirect_counts,
+                problematic_count: problematic.len() as u32,
             },
         );
     }
@@ -129,6 +142,59 @@ async fn main() -> Result<()> {
 
     log::info!("Done.");
     Ok(())
+}
+
+fn aggregate_problematic(
+    dep_map: &HashMap<u64, u64>,
+    builds: &[hydra::Build],
+    maintainers_map: &HashMap<String, maintainers::MetaInfo>,
+) -> Vec<ProblematicItem> {
+    // Build lookup: hydra_id → Build for direct builds
+    let direct_by_id: HashMap<u64, &hydra::Build> = builds
+        .iter()
+        .filter(|b| b.status == BuildStatus::Direct)
+        .map(|b| (b.hydra_id, b))
+        .collect();
+
+    // Group indirect builds by their causing direct build ID
+    let mut groups: HashMap<u64, Vec<&hydra::Build>> = HashMap::new();
+    for b in builds.iter().filter(|b| b.status == BuildStatus::Indirect) {
+        if let Some(&direct_id) = dep_map.get(&b.hydra_id) {
+            if direct_by_id.contains_key(&direct_id) {
+                groups.entry(direct_id).or_default().push(b);
+            }
+        }
+    }
+
+    let mut items: Vec<ProblematicItem> = groups
+        .into_iter()
+        .filter_map(|(direct_id, blocked_builds)| {
+            let direct = direct_by_id.get(&direct_id)?;
+            let meta = maintainers_map
+                .get(&direct.attrpath)
+                .cloned()
+                .unwrap_or_default();
+
+            let mut blocked: Vec<String> = blocked_builds
+                .iter()
+                .map(|b| b.attrpath.clone())
+                .collect();
+            blocked.sort();
+            blocked.dedup();
+
+            Some(ProblematicItem {
+                attrpath: direct.attrpath.clone(),
+                platform: direct.platform.clone(),
+                maintainers: meta.maintainers,
+                hydra_id: direct.hydra_id,
+                blocked_count: blocked.len() as u32,
+                blocked,
+            })
+        })
+        .collect();
+
+    items.sort_by(|a, b| b.blocked_count.cmp(&a.blocked_count));
+    items
 }
 
 fn categorize_builds(

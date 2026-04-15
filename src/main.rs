@@ -17,6 +17,10 @@ fn main() -> Result<()> {
         Command::All { filter } => (JobFilter::All, filter),
         Command::Direct { filter } => (JobFilter::Direct, filter),
         Command::Indirect { filter } => (JobFilter::Indirect, filter),
+        Command::Problematic { filter, min_blocked } => {
+            run_problematic(filter, min_blocked, cli.no_pager)?;
+            return Ok(());
+        }
     };
 
     run_failures(job_filter, filter, cli.no_pager)?;
@@ -58,6 +62,46 @@ fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter, no_pager: boo
             pager::Pager::with_default_pager("less -R").setup();
         }
         table::print_failures(&entries);
+    }
+    Ok(())
+}
+
+fn run_problematic(filter: cli::FailureFilter, min_blocked: u32, no_pager: bool) -> Result<()> {
+    let mut entries = fetcher::fetch_problematic(&filter)?;
+
+    entries.retain(|e| e.item.blocked_count >= min_blocked);
+
+    match filter.fails_on {
+        FailsOn::All => {}
+        FailsOn::Linux => entries.retain(|e| matches!(
+            e.item.platform.as_str(),
+            "aarch64-linux" | "x86_64-linux" | "i686-linux"
+        )),
+        FailsOn::Darwin => entries.retain(|e| matches!(
+            e.item.platform.as_str(),
+            "aarch64-darwin" | "x86_64-darwin"
+        )),
+        FailsOn::Aarch64Linux => entries.retain(|e| e.item.platform == "aarch64-linux"),
+        FailsOn::X8664Linux => entries.retain(|e| e.item.platform == "x86_64-linux"),
+        FailsOn::Aarch64Darwin => entries.retain(|e| e.item.platform == "aarch64-darwin"),
+        FailsOn::X8664Darwin => entries.retain(|e| e.item.platform == "x86_64-darwin"),
+        FailsOn::I686Linux => entries.retain(|e| e.item.platform == "i686-linux"),
+    }
+
+    if let Some(ref name) = filter.maintainer {
+        entries.retain(|e| e.item.maintainers.iter().any(|m| m == name));
+    } else if filter.no_maintainer {
+        entries.retain(|e| e.item.maintainers.is_empty());
+    }
+
+    if let Some(dest) = filter.export {
+        table::export_problematic_csv(&entries, &dest)?;
+    } else {
+        if !no_pager && entries.len() >= 50 {
+            unsafe { std::env::set_var("CLICOLOR_FORCE", "1") };
+            pager::Pager::with_default_pager("less -R").setup();
+        }
+        table::print_problematic(&entries);
     }
     Ok(())
 }

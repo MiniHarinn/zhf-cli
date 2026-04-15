@@ -6,7 +6,7 @@ use tabled::{
 };
 use zhf_types::IndexJson;
 
-use crate::fetcher::FailureEntry;
+use crate::fetcher::{FailureEntry, ProblematicEntry};
 
 const CHANNEL_ORDER: &[(&str, &str)] = &[
     ("nixos_unstable",       "nixos/unstable"),
@@ -91,6 +91,10 @@ pub fn print_stats(s: &IndexJson) {
         rows.push(StatsRow {
             field: label("Total Indirect"),
             value: count(ch.indirect_counts.total),
+        });
+        rows.push(StatsRow {
+            field: label("Problematic Deps"),
+            value: count(ch.problematic_count),
         });
     }
 
@@ -211,6 +215,102 @@ fn kind(value: &str) -> String {
         _ => Style::new().bold(),
     };
     style_text(value, style)
+}
+
+#[derive(Tabled)]
+struct ProblematicRow {
+    #[tabled(rename = "Channel")]
+    channel: String,
+    #[tabled(rename = "Attrpath")]
+    attrpath: String,
+    #[tabled(rename = "Platform")]
+    platform: String,
+    #[tabled(rename = "Maintainers")]
+    maintainers: String,
+    #[tabled(rename = "Hydra Build")]
+    hydra_url: String,
+    #[tabled(rename = "Blocked")]
+    blocked: String,
+}
+
+pub fn print_problematic(entries: &[ProblematicEntry]) {
+    if entries.is_empty() {
+        println!(
+            "{}",
+            style_text(
+                "No problematic dependencies found matching the given filters.",
+                Style::new().green().bold()
+            )
+        );
+        return;
+    }
+
+    let rows: Vec<ProblematicRow> = entries
+        .iter()
+        .map(|e| ProblematicRow {
+            channel: style_text(&e.channel, Style::new().bright_black()),
+            attrpath: style_text(&e.item.attrpath, Style::new().cyan()),
+            platform: platform(&e.item.platform),
+            maintainers: if e.item.maintainers.is_empty() {
+                style_text("-", Style::new().bright_black())
+            } else {
+                let m = &e.item.maintainers;
+                let shown = m.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                if m.len() > 2 {
+                    format!(
+                        "{} {}",
+                        style_text(&shown, Style::new().magenta()),
+                        style_text(&format!("and {} more", m.len() - 2), Style::new().bright_black()),
+                    )
+                } else {
+                    style_text(&shown, Style::new().magenta())
+                }
+            },
+            hydra_url: style_text(
+                &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
+                Style::new().blue(),
+            ),
+            blocked: count(e.item.blocked_count),
+        })
+        .collect();
+
+    let table = Table::new(rows)
+        .with(TableStyle::rounded())
+        .with(Modify::new(Rows::first()).with(Alignment::center()))
+        .to_string();
+
+    println!("{table}");
+    println!(
+        "  {} {}",
+        style_text("Total:", Style::new().bold()),
+        count(entries.len() as u32)
+    );
+}
+
+pub fn export_problematic_csv(entries: &[ProblematicEntry], dest: &str) -> Result<()> {
+    let mut wtr = csv::Writer::from_path(dest)?;
+    wtr.write_record(["Channel", "Attrpath", "Platform", "Maintainers", "Hydra Build", "Blocked Count", "Blocked Attrpaths"])?;
+    for e in entries {
+        let maintainers = e.item.maintainers.join(",");
+        let blocked = e.item.blocked.join(";");
+        wtr.write_record([
+            e.channel.as_str(),
+            e.item.attrpath.as_str(),
+            e.item.platform.as_str(),
+            maintainers.as_str(),
+            &format!("https://hydra.nixos.org/build/{}", e.item.hydra_id),
+            &e.item.blocked_count.to_string(),
+            blocked.as_str(),
+        ])?;
+    }
+    wtr.flush()?;
+    println!(
+        "{} {} {}",
+        style_text("Exported", Style::new().green().bold()),
+        count(entries.len() as u32),
+        style_text(&format!("rows to {dest}"), Style::new().cyan())
+    );
+    Ok(())
 }
 
 fn style_text(text: &str, style: Style) -> String {

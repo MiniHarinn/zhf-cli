@@ -14,6 +14,8 @@ pub struct ChannelInfo {
     pub eval: EvalInfo,
     pub direct_counts: FailureCounts,
     pub indirect_counts: FailureCounts,
+    #[serde(default)]
+    pub problematic_count: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,4 +43,15 @@ pub struct FailureItem {
     /// GitHub handles of package maintainers (empty if none)
     pub maintainers: Vec<String>,
     pub hydra_id: u64,
+}
+
+/// A direct failure that caused cascade (indirect) failures
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProblematicItem {
+    pub attrpath: String,
+    pub platform: String,
+    pub maintainers: Vec<String>,
+    pub hydra_id: u64,
+    pub blocked_count: u32,
+    pub blocked: Vec<String>,
 }
