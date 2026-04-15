@@ -50,7 +50,6 @@ pub fn print_stats(s: &IndexJson) {
     for (slug, display_name) in CHANNEL_ORDER {
         let Some(ch) = s.channels.get(*slug) else { continue };
 
-        // Blank separator between channels (except before the first)
         if rows.len() > 2 {
             rows.push(StatsRow { field: String::new(), value: String::new() });
         }

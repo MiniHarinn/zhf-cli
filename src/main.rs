@@ -53,8 +53,7 @@ fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter, no_pager: boo
         table::export_csv(&entries, &dest)?;
     } else {
         if !no_pager && entries.len() >= 50 {
-            // Force ANSI color output — owo-colors detects the pager pipe as
-            // non-TTY and strips colors otherwise.
+            // owo-colors strips colors when stdout is piped; force them back
             unsafe { std::env::set_var("CLICOLOR_FORCE", "1") };
             pager::Pager::with_default_pager("less -R").setup();
         }

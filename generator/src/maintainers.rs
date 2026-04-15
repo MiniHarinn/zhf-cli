@@ -7,10 +7,8 @@ use tokio::sync::Semaphore;
 
 use crate::hydra::Build;
 
-/// Max parallel `nix eval` processes. Each process now evaluates a batch of attrs.
-const DEFAULT_PARALLEL_NIX_EVALS: usize = 2;
-/// Number of attrpaths to resolve in a single `nix eval` invocation.
-const BATCH_SIZE: usize = 10;
+const DEFAULT_PARALLEL_NIX_EVALS: usize = 2; // max concurrent nix eval processes
+const BATCH_SIZE: usize = 10;                 // attrs per nix eval invocation
 const PROGRESS_REPORT_EVERY_BATCHES: usize = 100;
 
 #[derive(Default, Clone)]
@@ -18,17 +16,10 @@ pub struct MetaInfo {
     pub maintainers: Vec<String>,
 }
 
-/// Resolves package metadata for all failed builds in parallel.
-///
-/// All builds in a single call share the same nixpkgs `commit` (one per channel).
-/// Deduplicates by attrpath, then batches multiple attrpaths into a single `nix eval`
-/// call to amortize nixpkgs import cost.
-///
-/// Returns a map of `attrpath → MetaInfo`.
 pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, MetaInfo> {
     let parallel_nix_evals = maintainer_eval_concurrency();
 
-    // Deduplicate: one nix eval per unique attrpath (maintainers are per-package, not per-platform)
+    // maintainers are per-package, not per-platform — deduplicate by attrpath
     let mut unique: HashMap<&str, (&str, bool)> = HashMap::new();
     for build in builds {
         unique
@@ -36,7 +27,7 @@ pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, Meta
             .or_insert((build.nix_attr.as_str(), build.is_nixos));
     }
 
-    // Group by is_nixos so each batch shares a single nixpkgs import (nix_file differs)
+    // group by type so each batch shares one nixpkgs import (nix_file differs between nixos/nixpkgs)
     let mut groups: HashMap<bool, Vec<(&str, &str)>> = HashMap::new();
     for (attrpath, (nix_attr, is_nixos)) in &unique {
         groups
@@ -90,27 +81,19 @@ pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, Meta
     result
 }
 
-/// Evaluates maintainers for a batch of attrpaths in a single `nix eval` call.
-///
-/// Each attr is wrapped in `builtins.tryEval` + `builtins.deepSeq` so that one
-/// failing package does not abort the entire batch.
 async fn eval_meta_batch(
     attrs: &[(String, String)],
     commit: &str,
     is_nixos: bool,
 ) -> HashMap<String, MetaInfo> {
-    // release-combined.nix explicitly strips meta.maintainers via removeMaintainers;
-    // use release.nix directly instead, which preserves them.
-    // release.nix exposes jobs without the "nixos." prefix, so strip it from nix_attr.
+    // release-combined.nix strips maintainers via removeMaintainers; use release.nix instead
     let nix_file = if is_nixos {
         "nixpkgs/nixos/release.nix"
     } else {
         "nixpkgs/pkgs/top-level/release.nix"
     };
 
-    // Build one expression that imports nixpkgs once and evaluates all attrs.
-    // `safe` wraps each access: deepSeq forces full evaluation before tryEval
-    // catches any thrown errors, returning [] for failed attrs.
+    // import nixpkgs once, eval all attrs; `safe` uses tryEval+deepSeq to isolate per-attr failures
     let mut expr = format!(
         "let pkgs = import <{nix_file}> {{}};\n\
          safe = x: let r = builtins.tryEval (builtins.deepSeq x x); in if r.success then r.value else [];\n\

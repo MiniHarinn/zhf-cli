@@ -13,9 +13,8 @@ pub struct EvalInfo {
 
 #[derive(Clone)]
 pub struct Build {
-    /// Display attrpath (e.g. "nixos.tests.foo.x86_64-linux" or "nixpkgs.bar.x86_64-linux")
     pub attrpath: String,
-    /// Attribute to pass to `nix eval` (no "nixpkgs." prefix for nixpkgs builds)
+    // nix_attr has no "nixpkgs." prefix for nixpkgs builds
     pub nix_attr: String,
     pub platform: String,
     pub hydra_id: u64,
@@ -41,15 +40,10 @@ struct HydraEvalInput {
     revision: Option<String>,
 }
 
-/// Returns the latest *finished* eval for a jobset, along with its nixpkgs commit.
-///
-/// Uses `/jobset/{project}/{jobset}/latest-eval` which Hydra guarantees points
-/// to the most recently completed evaluation.
 pub async fn get_latest_eval(client: &Client, project: &str, jobset: &str) -> Result<EvalInfo> {
     let url = format!("https://hydra.nixos.org/jobset/{project}/{jobset}/latest-eval");
 
-    // latest-eval returns a 302. reqwest follows redirects by default, so we
-    // land on /eval/{id} and get the JSON straight away.
+    // latest-eval redirects to /eval/{id}; reqwest follows it automatically
     let text = fetch_with_retry(client, &url, "application/json").await?;
     let eval: HydraEval = serde_json::from_str(&text)?;
 
@@ -66,16 +60,10 @@ pub async fn get_latest_eval(client: &Client, project: &str, jobset: &str) -> Re
     })
 }
 
-/// Fetches all failed builds for an evaluation by parsing Hydra's eval HTML.
-///
-/// * `is_nixos = true`  → nixos/unstable eval; only `nixos.*` jobs are kept.
-/// * `is_nixos = false` → nixpkgs/unstable eval; all jobs kept, `nixpkgs.` prepended.
-///
-/// Uses the HTML endpoint (`/eval/{id}?full=1`) rather than the JSON API
-/// (`/eval/{id}/builds`) because the JSON endpoint times out on large evals.
 pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> Result<Vec<Build>> {
     log::info!("Fetching builds for eval {eval_id} (is_nixos={is_nixos})…");
 
+    // HTML endpoint — the JSON API (/eval/{id}/builds) times out on large evals
     let url = format!("https://hydra.nixos.org/eval/{eval_id}?full=1");
     let html = fetch_with_retry(client, &url, "text/html").await?;
 
@@ -85,8 +73,6 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
     Ok(builds)
 }
 
-/// Fetch a URL, retrying up to 5 times with exponential back-off (1 s, 2 s, 4 s, …).
-/// Returns the response body as a `String`.
 async fn fetch_with_retry(client: &Client, url: &str, accept: &str) -> Result<String> {
     const MAX_ATTEMPTS: u32 = 5;
     for attempt in 1..=MAX_ATTEMPTS {
@@ -124,7 +110,6 @@ pub fn format_timestamp(ts: u64) -> String {
         .to_string()
 }
 
-/// Formats the current UTC time using the same format as `format_timestamp`.
 pub fn now_formatted() -> String {
     format_timestamp(chrono::Utc::now().timestamp() as u64)
 }
@@ -132,8 +117,7 @@ pub fn now_formatted() -> String {
 fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build>> {
     let doc = Html::parse_document(html);
 
-    // The Hydra eval page organises builds into named tab panes:
-    // "tabs-now-fail" (new regressions), "tabs-still-fail" (chronic), "tabs-aborted".
+    // Hydra groups failures into tab panes: tabs-now-fail, tabs-still-fail, tabs-aborted
     let section_sel  = Selector::parse("#tabs-now-fail, #tabs-still-fail, #tabs-aborted").unwrap();
     let row_sel      = Selector::parse("tr").unwrap();
     let status_sel   = Selector::parse("img.build-status").unwrap();
@@ -142,7 +126,7 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
 
     let sections: Vec<_> = doc.select(&section_sel).collect();
     let rows: Vec<_> = if sections.is_empty() {
-        // Fallback: parse whole document (no section divs — test HTML or Hydra changed its structure).
+        // fallback: no tab panes found — parse entire document
         doc.root_element().select(&row_sel).collect()
     } else {
         sections.iter().flat_map(|s| s.select(&row_sel)).collect()
@@ -150,7 +134,7 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
 
     let mut builds = Vec::new();
     for row in rows {
-        // Status is encoded in an img title attribute (e.g. "Failed", "Dependency failed").
+        // build status is in img.build-status[title] (e.g. "Failed", "Dependency failed")
         let Some(status_text) = row
             .select(&status_sel)
             .next()
@@ -162,8 +146,7 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
             continue;
         };
 
-        // Each row has two build links: links[0] = row-link (text = build ID number),
-        // links[1] = job name link. Both href to /build/{id}.
+        // each row has two /build/ links: links[0] = build ID, links[1] = job name
         let links: Vec<_> = row.select(&link_sel).collect();
         let Some(job_link) = links.get(1) else {
             continue;

@@ -30,8 +30,7 @@ async fn main() -> Result<()> {
 
     let client = reqwest::Client::builder()
         .user_agent("zhf-generator/0.1 (github.com/moment/zhf)")
-        // Keep TCP connections alive so the OS doesn't kill them while Hydra
-        // serializes large eval responses (can take minutes for 280k builds).
+        // keepalive prevents the OS from dropping the connection while Hydra serializes large evals
         .tcp_keepalive(std::time::Duration::from_secs(30))
         .build()?;
 
@@ -52,15 +51,10 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all("output/data")?;
 
-    // ── 3. Resolve maintainers globally — deduped across channels ──────────
-    //
-    // Channels of the same project type (nixos/nixpkgs) share most failing
-    // attrpaths. Resolving per-channel would repeat work for the same packages.
-    // Instead, collect the union of attrpaths per project type and resolve once,
-    // using the unstable channel's commit (most up-to-date) for each type.
-    // Both groups resolve concurrently.
-    let nixos_unstable_commit = &evals[0].nixpkgs_commit;   // nixos/unstable
-    let nixpkgs_unstable_commit = &evals[2].nixpkgs_commit; // nixpkgs/unstable
+    // Deduplicate attrs across channels and resolve maintainers once per unique attr.
+    // evals[0] = nixos/unstable, evals[2] = nixpkgs/unstable (most up-to-date commits).
+    let nixos_unstable_commit = &evals[0].nixpkgs_commit;
+    let nixpkgs_unstable_commit = &evals[2].nixpkgs_commit;
 
     let mut seen_nixos: HashSet<String> = HashSet::new();
     let mut seen_nixpkgs: HashSet<String> = HashSet::new();
@@ -137,8 +131,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Deduplicates builds by attrpath (preferring Direct over Indirect) and
-/// categorizes them into direct/indirect lists with per-kind platform counts.
 fn categorize_builds(
     builds: &[hydra::Build],
     maintainers_map: &HashMap<String, maintainers::MetaInfo>,
@@ -146,14 +138,14 @@ fn categorize_builds(
     let mut direct_counts = FailureCounts::default();
     let mut indirect_counts = FailureCounts::default();
 
-    // Pass 1: collect attrpaths that have at least one Direct failure.
+    // pass 1: find all attrs that have at least one direct failure
     let has_direct: HashSet<&str> = builds
         .iter()
         .filter(|b| b.status == BuildStatus::Direct)
         .map(|b| b.attrpath.as_str())
         .collect();
 
-    // Pass 2: emit each attrpath once, skipping Indirect when a Direct exists.
+    // pass 2: emit each attr once, skipping indirect when a direct exists
     let mut emitted: HashSet<&str> = HashSet::new();
     let mut direct_items: Vec<FailureItem> = Vec::new();
     let mut indirect_items: Vec<FailureItem> = Vec::new();
