@@ -8,6 +8,17 @@ use cli::{Cli, Command, FailsOn, JobFilter};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let (job_filter, filter) = match cli.command {
+        Command::Stats => {
+            let stats = fetcher::fetch_stats()?;
+            table::print_stats(&stats);
+            return Ok(());
+        }
+        Command::All { filter } => (JobFilter::All, filter),
+        Command::Direct { filter } => (JobFilter::Direct, filter),
+        Command::Indirect { filter } => (JobFilter::Indirect, filter),
+    };
+
     if !cli.no_pager {
         // Force ANSI color output — owo-colors detects the pager pipe as
         // non-TTY and strips colors otherwise.
@@ -15,21 +26,7 @@ fn main() -> Result<()> {
         pager::Pager::with_default_pager("less -R").setup();
     }
 
-    match cli.command {
-        Command::Stats => {
-            let stats = fetcher::fetch_stats()?;
-            table::print_stats(&stats);
-        }
-        Command::All { filter } => {
-            run_failures(JobFilter::All, filter)?;
-        }
-        Command::Direct { filter } => {
-            run_failures(JobFilter::Direct, filter)?;
-        }
-        Command::Indirect { filter } => {
-            run_failures(JobFilter::Indirect, filter)?;
-        }
-    }
+    run_failures(job_filter, filter)?;
     Ok(())
 }
 

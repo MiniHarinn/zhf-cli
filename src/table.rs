@@ -84,6 +84,7 @@ pub fn print_stats(s: &IndexJson) {
                 });
             }
         }
+        rows.push(StatsRow { field: String::new(), value: String::new() });
         rows.push(StatsRow {
             field: label("Total Direct"),
             value: count(ch.direct_counts.total),
