@@ -6,7 +6,7 @@
 
 # ZHF-CLI
 
-A CLI tool for querying [NixOS](https://nixos.org/) / [nixpkgs](https://github.com/NixOS/nixpkgs) build failures from [Hydra CI](https://hydra.nixos.org/), built to help maintainers during the [Zero Hydra Failures](https://nixos.org/manual/nixpkgs/stable/#chap-submitting-changes) campaign. Also useful outside of ZHF for checking what's currently failing on Hydra.
+A CLI tool for querying [NixOS](https://nixos.org/) / [nixpkgs](https://github.com/NixOS/nixpkgs) build failures from [Hydra CI](https://hydra.nixos.org/), built to help maintainers during the [ **Zero Hydra Failures** ] campaign. Also useful outside of ZHF for checking what's currently failing on Hydra.
 
 <p>
   <a href="https://hydra.nixos.org/"><img src="https://img.shields.io/badge/data-Hydra_CI-e05151?style=for-the-badge" alt="Hydra CI" height="28" /></a>
