@@ -26,7 +26,6 @@ fn main() -> Result<()> {
 fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter, no_pager: bool) -> Result<()> {
     let mut entries = fetcher::fetch_failures(job_filter, &filter)?;
 
-    // Apply platform filter
     match filter.fails_on {
         FailsOn::All => {}
         FailsOn::Linux => entries.retain(|e| matches!(
@@ -44,7 +43,6 @@ fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter, no_pager: boo
         FailsOn::I686Linux => entries.retain(|e| e.item.platform == "i686-linux"),
     }
 
-    // Apply maintainer filter
     if let Some(ref name) = filter.maintainer {
         entries.retain(|e| e.item.maintainers.iter().any(|m| m == name));
     } else if filter.no_maintainer {

@@ -11,10 +11,8 @@ use crate::hydra::Build;
 const DEFAULT_PARALLEL_NIX_EVALS: usize = 2;
 /// Number of attrpaths to resolve in a single `nix eval` invocation.
 const BATCH_SIZE: usize = 10;
-/// Number of completed batches between progress updates.
 const PROGRESS_REPORT_EVERY_BATCHES: usize = 100;
 
-/// Package metadata resolved via `nix eval`.
 #[derive(Default, Clone)]
 pub struct MetaInfo {
     pub maintainers: Vec<String>,
@@ -97,7 +95,7 @@ pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, Meta
 /// Each attr is wrapped in `builtins.tryEval` + `builtins.deepSeq` so that one
 /// failing package does not abort the entire batch.
 async fn eval_meta_batch(
-    attrs: &[(String, String)], // (attrpath, nix_attr)
+    attrs: &[(String, String)],
     commit: &str,
     is_nixos: bool,
 ) -> HashMap<String, MetaInfo> {

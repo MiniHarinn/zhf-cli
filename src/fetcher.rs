@@ -11,10 +11,8 @@ fn base_url() -> String {
     std::env::var("ZHF_DATA_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
 }
 
-// Re-export the shared types so the rest of the crate can import from here
 pub use zhf_types::IndexJson as Stats;
 
-/// A failure item annotated with its kind and source channel for display purposes.
 pub struct FailureEntry {
     pub item: FailureItem,
     pub kind: &'static str,
@@ -41,7 +39,6 @@ pub fn fetch_stats() -> Result<Stats> {
     fetch_json("data/index.json")
 }
 
-/// Maps a "project:channel" string to a file slug, warning on unknown values.
 fn channel_to_slug(spec: &str) -> Option<&'static str> {
     match spec {
         "nixos:unstable"      => Some("nixos_unstable"),

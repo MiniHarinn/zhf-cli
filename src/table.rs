@@ -8,7 +8,6 @@ use zhf_types::IndexJson;
 
 use crate::fetcher::FailureEntry;
 
-// Display order and human-readable labels for channels
 const CHANNEL_ORDER: &[(&str, &str)] = &[
     ("nixos_unstable",       "nixos/unstable"),
     ("nixos_staging",        "nixos/staging"),

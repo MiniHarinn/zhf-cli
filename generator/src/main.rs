@@ -35,7 +35,6 @@ async fn main() -> Result<()> {
         .tcp_keepalive(std::time::Duration::from_secs(30))
         .build()?;
 
-    // ── 1. Fetch latest finished eval for all channels ─────────────────────
     log::info!("Fetching latest evals for {} channels…", CHANNELS.len());
     let evals: Vec<hydra::EvalInfo> = futures::future::try_join_all(
         CHANNELS.iter().map(|ch| hydra::get_latest_eval(&client, ch.project, ch.jobset))
@@ -44,7 +43,6 @@ async fn main() -> Result<()> {
         log::info!("{}/{} eval: {}", ch.project, ch.jobset, eval.id);
     }
 
-    // ── 2. Fetch builds for all channels ───────────────────────────────────
     log::info!("Fetching builds for all channels…");
     let builds_per_channel: Vec<Vec<hydra::Build>> = futures::future::try_join_all(
         CHANNELS.iter().zip(&evals).map(|(ch, eval)| {
@@ -96,7 +94,6 @@ async fn main() -> Result<()> {
     all_maintainers.extend(nixpkgs_maintainers);
     log::info!("Maintainers resolved for {} unique attrs total", all_maintainers.len());
 
-    // ── 4. Per-channel: categorize builds and write files ──────────────────
     let mut channel_index: HashMap<String, ChannelInfo> = HashMap::new();
 
     for (i, ch) in CHANNELS.iter().enumerate() {
@@ -130,7 +127,6 @@ async fn main() -> Result<()> {
         );
     }
 
-    // ── 5. Write index.json ────────────────────────────────────────────────
     let index = IndexJson {
         generated_at: hydra::now_formatted(),
         channels: channel_index,

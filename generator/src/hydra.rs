@@ -29,8 +29,6 @@ pub enum BuildStatus {
     Indirect,
 }
 
-// ── Hydra JSON shapes ──────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 struct HydraEval {
     id: u64,
@@ -42,8 +40,6 @@ struct HydraEval {
 struct HydraEvalInput {
     revision: Option<String>,
 }
-
-// ── Public API ─────────────────────────────────────────────────────────────
 
 /// Returns the latest *finished* eval for a jobset, along with its nixpkgs commit.
 ///
@@ -89,8 +85,6 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
     Ok(builds)
 }
 
-// ── Retry helper ──────────────────────────────────────────────────────────
-
 /// Fetch a URL, retrying up to 5 times with exponential back-off (1 s, 2 s, 4 s, …).
 /// Returns the response body as a `String`.
 async fn fetch_with_retry(client: &Client, url: &str, accept: &str) -> Result<String> {
@@ -122,8 +116,6 @@ async fn fetch_with_retry(client: &Client, url: &str, accept: &str) -> Result<St
     }
     unreachable!()
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 pub fn format_timestamp(ts: u64) -> String {
     DateTime::from_timestamp(ts as i64, 0)
