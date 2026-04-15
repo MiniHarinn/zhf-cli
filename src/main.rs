@@ -19,18 +19,11 @@ fn main() -> Result<()> {
         Command::Indirect { filter } => (JobFilter::Indirect, filter),
     };
 
-    if !cli.no_pager {
-        // Force ANSI color output — owo-colors detects the pager pipe as
-        // non-TTY and strips colors otherwise.
-        unsafe { std::env::set_var("CLICOLOR_FORCE", "1") };
-        pager::Pager::with_default_pager("less -R").setup();
-    }
-
-    run_failures(job_filter, filter)?;
+    run_failures(job_filter, filter, cli.no_pager)?;
     Ok(())
 }
 
-fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter) -> Result<()> {
+fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter, no_pager: bool) -> Result<()> {
     let mut entries = fetcher::fetch_failures(job_filter, &filter)?;
 
     // Apply platform filter
@@ -61,6 +54,12 @@ fn run_failures(job_filter: JobFilter, filter: cli::FailureFilter) -> Result<()>
     if let Some(dest) = filter.export {
         table::export_csv(&entries, &dest)?;
     } else {
+        if !no_pager && entries.len() >= 50 {
+            // Force ANSI color output — owo-colors detects the pager pipe as
+            // non-TTY and strips colors otherwise.
+            unsafe { std::env::set_var("CLICOLOR_FORCE", "1") };
+            pager::Pager::with_default_pager("less -R").setup();
+        }
         table::print_failures(&entries);
     }
     Ok(())
