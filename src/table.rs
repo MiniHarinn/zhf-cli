@@ -46,6 +46,8 @@ pub fn print_stats(s: &IndexJson) {
         value: style_text(&s.generated_at, Style::new().bright_black()),
     }];
 
+    rows.push(StatsRow { field: String::new(), value: String::new() });
+
     for (slug, display_name) in CHANNEL_ORDER {
         let Some(ch) = s.channels.get(*slug) else { continue };
 
