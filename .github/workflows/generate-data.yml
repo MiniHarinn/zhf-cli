@@ -37,12 +37,7 @@ jobs:
         run: cargo build --release -p zhf-generator
 
       - name: Run generator
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 3
-          timeout_minutes: 240
-          retry_wait_seconds: 30
-          command: ./target/release/zhf-generator
+        run: ./target/release/zhf-generator
         env:
           ZHF_MAINTAINER_CONCURRENCY: 1
 
