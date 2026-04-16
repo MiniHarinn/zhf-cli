@@ -16,9 +16,11 @@ pub struct MetaInfo {
     pub maintainers: Vec<String>,
 }
 
-pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, MetaInfo> {
-    let parallel_nix_evals = maintainer_eval_concurrency();
-
+pub async fn resolve_all(
+    builds: &[Build],
+    commit: &str,
+    sem: Arc<Semaphore>,
+) -> HashMap<String, MetaInfo> {
     // maintainers are per-package, not per-platform — deduplicate by attrpath
     let mut unique: HashMap<&str, (&str, bool)> = HashMap::new();
     for build in builds {
@@ -39,14 +41,7 @@ pub async fn resolve_all(builds: &[Build], commit: &str) -> HashMap<String, Meta
     let total = unique.len();
     let completed = Arc::new(AtomicUsize::new(0));
     let completed_batches = Arc::new(AtomicUsize::new(0));
-    let sem = Arc::new(Semaphore::new(parallel_nix_evals));
     let mut handles = Vec::new();
-
-    log::info!(
-        "Resolving maintainers with concurrency={} batch_size={}",
-        parallel_nix_evals,
-        BATCH_SIZE
-    );
 
     for (is_nixos, attrs) in groups {
         for chunk in attrs.chunks(BATCH_SIZE) {
@@ -163,4 +158,13 @@ fn maintainer_eval_concurrency() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_PARALLEL_NIX_EVALS)
+}
+
+/// Build the shared semaphore that bounds total concurrent `nix eval` processes
+/// across all `resolve_all` calls. Must be shared (not recreated per call) so
+/// that `ZHF_MAINTAINER_CONCURRENCY` reflects true process-level concurrency.
+pub fn make_semaphore() -> Arc<Semaphore> {
+    let n = maintainer_eval_concurrency();
+    log::info!("Resolving maintainers with concurrency={n} batch_size={BATCH_SIZE}");
+    Arc::new(Semaphore::new(n))
 }

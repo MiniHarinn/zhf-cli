@@ -79,9 +79,10 @@ async fn main() -> Result<()> {
         global_nixpkgs.len()
     );
 
+    let sem = maintainers::make_semaphore();
     let (nixos_maintainers, nixpkgs_maintainers) = tokio::join!(
-        maintainers::resolve_all(&global_nixos, nixos_unstable_commit),
-        maintainers::resolve_all(&global_nixpkgs, nixpkgs_unstable_commit),
+        maintainers::resolve_all(&global_nixos, nixos_unstable_commit, sem.clone()),
+        maintainers::resolve_all(&global_nixpkgs, nixpkgs_unstable_commit, sem.clone()),
     );
 
     let mut all_maintainers = nixos_maintainers;
