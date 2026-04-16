@@ -69,6 +69,15 @@ flowchart LR
 
 The generator parses Hydra's eval HTML instead of the JSON API, which times out on large evals (280k+ builds). Maintainer info is resolved by running `nix eval` against the pinned nixpkgs commit from each eval.
 
+### Atom feeds
+
+The generator also publishes Atom feeds so you can subscribe in any RSS/Atom reader and get notified when a package starts failing. The feed is diffed against the previous run (fetched from GitHub Pages before each run — no separate state store), so you only see new breakages, not the full failing list every 6 hours.
+
+- **Per-channel**: `https://zhf.harinn.dev/feed/{channel}.xml` — one of `nixos_unstable`, `nixos_staging`, `nixpkgs_unstable`, `nixpkgs_staging_next`.
+- **Per-maintainer**: `https://zhf.harinn.dev/feed/maintainer/{github-handle}.xml` — only your packages.
+
+Each feed keeps the 200 most-recent entries sorted by first-seen time; both direct and indirect (cascade) failures are included.
+
 ### Note to Hydra maintainers
 
 The generator only runs every 6 hours via GitHub Actions and makes a small number of requests per run. If this is still causing issues for Hydra (User-Agent: `zhf-generator/0.1`), please reach out at `matrix:@harinn:matrix.org`.

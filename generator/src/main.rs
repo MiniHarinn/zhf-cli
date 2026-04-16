@@ -1,3 +1,4 @@
+mod feed;
 mod hydra;
 mod maintainers;
 
@@ -5,7 +6,10 @@ use anyhow::Result;
 use hydra::BuildStatus;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use zhf_types::{ChannelInfo, EvalInfo, FailureCounts, FailureItem, IndexJson, ProblematicItem};
+
+const DEFAULT_PUBLIC_BASE_URL: &str = "https://zhf.harinn.dev";
 
 struct ChannelSpec {
     project: &'static str,
@@ -90,6 +94,9 @@ async fn main() -> Result<()> {
     log::info!("Maintainers resolved for {} unique attrs total", all_maintainers.len());
 
     let mut channel_index: HashMap<String, ChannelInfo> = HashMap::new();
+    // Flat list of (channel_slug, item, kind) across all channels — consumed by
+    // the feed pipeline after the per-channel loop finishes.
+    let mut all_current: Vec<(String, FailureItem, &'static str)> = Vec::new();
 
     for (i, ch) in CHANNELS.iter().enumerate() {
         let builds = &builds_per_channel[i];
@@ -133,6 +140,13 @@ async fn main() -> Result<()> {
                 problematic_count: problematic.len() as u32,
             },
         );
+
+        for item in direct {
+            all_current.push((ch.slug.to_string(), item, "direct"));
+        }
+        for item in indirect {
+            all_current.push((ch.slug.to_string(), item, "indirect"));
+        }
     }
 
     let index = IndexJson {
@@ -141,7 +155,55 @@ async fn main() -> Result<()> {
     };
     fs::write("output/data/index.json", serde_json::to_string_pretty(&index)?)?;
 
+    generate_feeds(&client, &all_current).await?;
+
     log::info!("Done.");
+    Ok(())
+}
+
+async fn generate_feeds(
+    client: &reqwest::Client,
+    all_current: &[(String, FailureItem, &'static str)],
+) -> Result<()> {
+    let base_url = std::env::var("ZHF_PUBLIC_BASE_URL")
+        .unwrap_or_else(|_| DEFAULT_PUBLIC_BASE_URL.to_string());
+
+    let prev_state = feed::load_previous_state(client, &base_url).await?;
+
+    let current: Vec<feed::CurrentFailure> = all_current
+        .iter()
+        .map(|(slug, item, kind)| feed::CurrentFailure {
+            channel_slug: slug.as_str(),
+            item,
+            kind,
+        })
+        .collect();
+
+    let now = chrono::Utc::now();
+    let (state, new_keys) = feed::compute_next_state(prev_state.as_ref(), &current, now);
+    log::info!(
+        "Feed: {} currently-failing entries, {} newly failing since last run",
+        state.failures.len(),
+        new_keys.len()
+    );
+
+    let output_dir = Path::new("output");
+    feed::write_state(output_dir, &state)?;
+
+    let channel_lookup: HashMap<String, feed::ChannelDisplay> = CHANNELS
+        .iter()
+        .map(|ch| {
+            (
+                ch.slug.to_string(),
+                feed::ChannelDisplay {
+                    project: ch.project.to_string(),
+                    jobset: ch.jobset.to_string(),
+                },
+            )
+        })
+        .collect();
+
+    feed::write_feeds(output_dir, &state, &base_url, &channel_lookup, now)?;
     Ok(())
 }
 
