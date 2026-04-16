@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 use crate::hydra::Build;
 
 const DEFAULT_PARALLEL_NIX_EVALS: usize = 2; // max concurrent nix eval processes
-const BATCH_SIZE: usize = 100;                // attrs per nix eval invocation
+const BATCH_SIZE: usize = 30;                 // attrs per nix eval invocation
 const PROGRESS_REPORT_EVERY_BATCHES: usize = 100;
 
 #[derive(Default, Clone)]
