@@ -37,6 +37,12 @@ nix run github:MiniHarinn/zhf-cli -- stats
 # List direct failures on x86_64-linux
 nix run github:MiniHarinn/zhf-cli -- direct --fails-on x86_64-linux
 
+# Show packages causing the most cascade failures (sorted by blocked count)
+nix run github:MiniHarinn/zhf-cli -- problematic
+
+# Only show cascade causes blocking at least 10 packages
+nix run github:MiniHarinn/zhf-cli -- problematic --min-blocked 10
+
 # Find failures for a specific maintainer
 nix run github:MiniHarinn/zhf-cli -- direct --maintainer someuser
 
@@ -59,24 +65,29 @@ flowchart LR
     subgraph Generator["Generator (every 6h)"]
         A[Fetch latest evals\nfrom Hydra] --> B[Parse eval HTML\nfor failed builds]
         B --> C[Resolve maintainers\nvia nix eval]
-        C --> D[Write JSON\ndirect / indirect / index]
+        C --> D[Resolve cascade chains\nfor problematic causes]
+        D --> E[Diff vs. previous\nstate.json]
+        E --> F[Write JSON + Atom feeds\ndirect / indirect / problematic\nper-channel / per-maintainer]
     end
 
-    D --> E[GitHub Pages]
-    E --> F[CLI fetches JSON]
-    F --> G[Filter & display\nresults]
+    F --> G[GitHub Pages]
+    G --> H[CLI fetches JSON]
+    G --> I[RSS/Atom reader]
+    H --> J[Filter & display\nresults]
 ```
 
-The generator parses Hydra's eval HTML instead of the JSON API, which times out on large evals (280k+ builds). Maintainer info is resolved by running `nix eval` against the pinned nixpkgs commit from each eval.
+The generator parses Hydra's eval HTML instead of the JSON API, which times out on large evals. Maintainer info comes from `nix eval` against the pinned nixpkgs commit. For each indirect failure, the generator follows Hydra's "propagated from" link to find the root cause, which lets `problematic` rank direct failures by how many packages they block.
 
-### Atom feeds
+Atom feeds are diff-based. Each run fetches the previously-published `state.json` from GitHub Pages, keeps `first_seen` for packages still failing, and only emits entries for ones that weren't failing last run. CI stays stateless and subscribers only get notified on new breakages.
 
-The generator also publishes Atom feeds so you can subscribe in any RSS/Atom reader and get notified when a package starts failing. The feed is diffed against the previous run (fetched from GitHub Pages before each run — no separate state store), so you only see new breakages, not the full failing list every 6 hours.
+### Subscribing to Atom feeds
 
-- **Per-channel**: `https://zhf.harinn.dev/feed/{channel}.xml` — one of `nixos_unstable`, `nixos_staging`, `nixpkgs_unstable`, `nixpkgs_staging_next`.
-- **Per-maintainer**: `https://zhf.harinn.dev/feed/maintainer/{github-handle}.xml` — only your packages.
+Paste these URLs into any RSS/Atom reader (NetNewsWire, Feedly, Thunderbird, Inoreader):
 
-Each feed keeps the 200 most-recent entries sorted by first-seen time; both direct and indirect (cascade) failures are included.
+- **Per-channel**: `https://zhf.harinn.dev/feed/{channel}.xml`. Channels: `nixos_unstable`, `nixos_staging`, `nixpkgs_unstable`, `nixpkgs_staging_next`.
+- **Per-maintainer**: `https://zhf.harinn.dev/feed/maintainer/{github-handle}.xml`. Only your packages. Exists once you have at least one failing package.
+
+Each feed keeps up to 200 entries, sorted by first-seen time. Direct and indirect (cascade) failures are both included.
 
 ### Note to Hydra maintainers
 
