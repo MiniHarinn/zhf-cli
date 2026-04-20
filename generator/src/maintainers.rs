@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 use crate::hydra::Build;
 
 const DEFAULT_PARALLEL_NIX_EVALS: usize = 2; // max concurrent nix eval processes
-const BATCH_SIZE: usize = 30;                 // attrs per nix eval invocation
+const DEFAULT_BATCH_SIZE: usize = 30;         // attrs per nix eval invocation
 const PROGRESS_REPORT_EVERY_BATCHES: usize = 100;
 
 #[derive(Default, Clone)]
@@ -44,7 +44,8 @@ pub async fn resolve_all(
     let mut handles = Vec::new();
 
     for (is_nixos, attrs) in groups {
-        for chunk in attrs.chunks(BATCH_SIZE) {
+        let batch_size = batch_size();
+        for chunk in attrs.chunks(batch_size) {
             let chunk: Vec<(String, String)> = chunk
                 .iter()
                 .map(|(ap, na)| (ap.to_string(), na.to_string()))
@@ -160,11 +161,20 @@ fn maintainer_eval_concurrency() -> usize {
         .unwrap_or(DEFAULT_PARALLEL_NIX_EVALS)
 }
 
+fn batch_size() -> usize {
+    env::var("ZHF_BATCH_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_BATCH_SIZE)
+}
+
 /// Build the shared semaphore that bounds total concurrent `nix eval` processes
 /// across all `resolve_all` calls. Must be shared (not recreated per call) so
 /// that `ZHF_MAINTAINER_CONCURRENCY` reflects true process-level concurrency.
 pub fn make_semaphore() -> Arc<Semaphore> {
     let n = maintainer_eval_concurrency();
-    log::info!("Resolving maintainers with concurrency={n} batch_size={BATCH_SIZE}");
+    let bs = batch_size();
+    log::info!("Resolving maintainers with concurrency={n} batch_size={bs}");
     Arc::new(Semaphore::new(n))
 }

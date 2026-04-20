@@ -40,6 +40,7 @@ jobs:
         run: ./target/release/zhf-generator
         env:
           ZHF_MAINTAINER_CONCURRENCY: 1
+          ZHF_BATCH_SIZE: 2
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
