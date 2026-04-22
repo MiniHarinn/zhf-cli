@@ -41,19 +41,7 @@ pub struct State {
     pub failures: BTreeMap<String, StateEntry>,
 }
 
-pub struct ChannelDisplay {
-    pub project: String,
-    pub jobset: String,
-}
-
-pub struct CurrentFailure<'a> {
-    pub channel_slug: &'a str,
-    pub item: &'a FailureItem,
-    /// "direct" or "indirect"
-    pub kind: &'static str,
-}
-
-pub fn state_key(channel_slug: &str, attrpath: &str) -> String {
+fn state_key(channel_slug: &str, attrpath: &str) -> String {
     format!("{channel_slug}|{attrpath}")
 }
 
@@ -89,7 +77,7 @@ pub async fn load_previous_state(client: &Client, base_url: &str) -> Result<Opti
 /// On a first run (`prev == None`) no keys are marked new, to avoid flooding.
 pub fn compute_next_state(
     prev: Option<&State>,
-    current: &[CurrentFailure<'_>],
+    current: &[(String, FailureItem, &'static str)],
     now: DateTime<Utc>,
 ) -> (State, Vec<String>) {
     let now_rfc = now.to_rfc3339_opts(SecondsFormat::Secs, true);
@@ -99,8 +87,8 @@ pub fn compute_next_state(
     let mut next: BTreeMap<String, StateEntry> = BTreeMap::new();
     let mut new_keys: Vec<String> = Vec::new();
 
-    for cur in current {
-        let key = state_key(cur.channel_slug, &cur.item.attrpath);
+    for (channel_slug, item, kind) in current {
+        let key = state_key(channel_slug, &item.attrpath);
         let prev_entry = prev_failures.and_then(|m| m.get(&key));
         let first_seen = prev_entry
             .map(|e| e.first_seen.clone())
@@ -114,9 +102,9 @@ pub fn compute_next_state(
             key,
             StateEntry {
                 first_seen,
-                hydra_id: cur.item.hydra_id,
-                kind: cur.kind.to_string(),
-                maintainers: cur.item.maintainers.clone(),
+                hydra_id: item.hydra_id,
+                kind: kind.to_string(),
+                maintainers: item.maintainers.clone(),
             },
         );
     }
@@ -145,7 +133,7 @@ pub fn write_feeds(
     output_dir: &Path,
     state: &State,
     base_url: &str,
-    channel_lookup: &HashMap<String, ChannelDisplay>,
+    channel_lookup: &HashMap<String, (String, String)>,
     now: DateTime<Utc>,
 ) -> Result<()> {
     let mut by_channel: HashMap<String, Vec<(String, &StateEntry)>> = HashMap::new();
@@ -172,9 +160,8 @@ pub fn write_feeds(
 
     for (channel, mut entries) in by_channel {
         sort_and_truncate(&mut entries);
-        let disp = channel_lookup.get(&channel);
-        let title = match disp {
-            Some(d) => format!("Hydra failures — {}/{}", d.project, d.jobset),
+        let title = match channel_lookup.get(&channel) {
+            Some((project, jobset)) => format!("Hydra failures — {project}/{jobset}"),
             None => format!("Hydra failures — {channel}"),
         };
         let self_url = format!("{base_url}/feed/{channel}.xml");
@@ -228,7 +215,7 @@ fn render_feed(
     self_url: &str,
     updated: DateTime<Utc>,
     entries: &[(String, &StateEntry)],
-    channel_lookup: &HashMap<String, ChannelDisplay>,
+    channel_lookup: &HashMap<String, (String, String)>,
 ) -> String {
     let mut feed = Feed::default();
     feed.set_id(feed_id);
@@ -265,12 +252,12 @@ fn render_feed(
 fn make_entry(
     key: &str,
     se: &StateEntry,
-    channel_lookup: &HashMap<String, ChannelDisplay>,
+    channel_lookup: &HashMap<String, (String, String)>,
 ) -> Entry {
     let (channel_slug, attrpath) = key.split_once('|').unwrap_or(("", key));
     let display_channel = channel_lookup
         .get(channel_slug)
-        .map(|d| format!("{}/{}", d.project, d.jobset))
+        .map(|(project, jobset)| format!("{project}/{jobset}"))
         .unwrap_or_else(|| channel_slug.to_string());
 
     let first_seen_fixed = parse_rfc3339_or_epoch(&se.first_seen);

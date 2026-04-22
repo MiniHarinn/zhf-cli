@@ -55,44 +55,12 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all("output/data")?;
 
-    // Deduplicate attrs across channels and resolve maintainers once per unique attr.
-    // evals[0] = nixos/unstable, evals[2] = nixpkgs/unstable (most up-to-date commits).
-    let nixos_unstable_commit = &evals[0].nixpkgs_commit;
-    let nixpkgs_unstable_commit = &evals[2].nixpkgs_commit;
-
-    let mut seen_nixos: HashSet<String> = HashSet::new();
-    let mut seen_nixpkgs: HashSet<String> = HashSet::new();
-    let mut global_nixos: Vec<hydra::Build> = Vec::new();
-    let mut global_nixpkgs: Vec<hydra::Build> = Vec::new();
-
-    for builds in &builds_per_channel {
-        for b in builds {
-            if b.is_nixos {
-                if seen_nixos.insert(b.nix_attr.clone()) {
-                    global_nixos.push(b.clone());
-                }
-            } else if seen_nixpkgs.insert(b.nix_attr.clone()) {
-                global_nixpkgs.push(b.clone());
-            }
-        }
-    }
-
-    log::info!(
-        "Resolving maintainers (bulk nix-env): {} unique nixos attrs, {} unique nixpkgs attrs…",
-        global_nixos.len(),
-        global_nixpkgs.len()
-    );
-
-    // Serial, not tokio::join! — each nix-env evaluates all of nixpkgs meta,
-    // which is memory-heavy. Running sequentially keeps peak RAM to one full
-    // nixpkgs eval graph at a time.
-    let nixos_maintainers =
-        maintainers::resolve_all(&global_nixos, nixos_unstable_commit, true).await;
-    let nixpkgs_maintainers =
-        maintainers::resolve_all(&global_nixpkgs, nixpkgs_unstable_commit, false).await;
-
-    let mut all_maintainers = nixos_maintainers;
-    all_maintainers.extend(nixpkgs_maintainers);
+    // Maintainer data comes from the pre-computed channel artifact, not a
+    // per-attr nix eval. `resolve` dedupes internally by attrpath.
+    log::info!("Resolving maintainers from channel artifacts…");
+    let meta_lookup = maintainers::MetaLookup::fetch(&client).await?;
+    let all_builds: Vec<hydra::Build> = builds_per_channel.iter().flatten().cloned().collect();
+    let all_maintainers = meta_lookup.resolve(&all_builds);
     log::info!("Maintainers resolved for {} unique attrs total", all_maintainers.len());
 
     let mut channel_index: HashMap<String, ChannelInfo> = HashMap::new();
@@ -152,7 +120,7 @@ async fn main() -> Result<()> {
     }
 
     let index = IndexJson {
-        generated_at: hydra::now_formatted(),
+        generated_at: hydra::format_timestamp(chrono::Utc::now().timestamp() as u64),
         channels: channel_index,
     };
     fs::write("output/data/index.json", serde_json::to_string_pretty(&index)?)?;
@@ -172,17 +140,8 @@ async fn generate_feeds(
 
     let prev_state = feed::load_previous_state(client, &base_url).await?;
 
-    let current: Vec<feed::CurrentFailure> = all_current
-        .iter()
-        .map(|(slug, item, kind)| feed::CurrentFailure {
-            channel_slug: slug.as_str(),
-            item,
-            kind,
-        })
-        .collect();
-
     let now = chrono::Utc::now();
-    let (state, new_keys) = feed::compute_next_state(prev_state.as_ref(), &current, now);
+    let (state, new_keys) = feed::compute_next_state(prev_state.as_ref(), all_current, now);
     log::info!(
         "Feed: {} currently-failing entries, {} newly failing since last run",
         state.failures.len(),
@@ -192,17 +151,9 @@ async fn generate_feeds(
     let output_dir = Path::new("output");
     feed::write_state(output_dir, &state)?;
 
-    let channel_lookup: HashMap<String, feed::ChannelDisplay> = CHANNELS
+    let channel_lookup: HashMap<String, (String, String)> = CHANNELS
         .iter()
-        .map(|ch| {
-            (
-                ch.slug.to_string(),
-                feed::ChannelDisplay {
-                    project: ch.project.to_string(),
-                    jobset: ch.jobset.to_string(),
-                },
-            )
-        })
+        .map(|ch| (ch.slug.to_string(), (ch.project.to_string(), ch.jobset.to_string())))
         .collect();
 
     feed::write_feeds(output_dir, &state, &base_url, &channel_lookup, now)?;

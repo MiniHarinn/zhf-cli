@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::DateTime;
 use reqwest::Client;
 use scraper::{Html, Selector};
@@ -12,7 +12,6 @@ use tokio::sync::Semaphore;
 pub struct EvalInfo {
     pub id: u64,
     pub time: String,
-    pub nixpkgs_commit: String,
 }
 
 #[derive(Clone)]
@@ -23,7 +22,6 @@ pub struct Build {
     pub platform: String,
     pub hydra_id: u64,
     pub status: BuildStatus,
-    pub is_nixos: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -36,31 +34,18 @@ pub enum BuildStatus {
 struct HydraEval {
     id: u64,
     timestamp: u64,
-    jobsetevalinputs: HashMap<String, HydraEvalInput>,
-}
-
-#[derive(Deserialize)]
-struct HydraEvalInput {
-    revision: Option<String>,
 }
 
 pub async fn get_latest_eval(client: &Client, project: &str, jobset: &str) -> Result<EvalInfo> {
     let url = format!("https://hydra.nixos.org/jobset/{project}/{jobset}/latest-eval");
 
     // latest-eval redirects to /eval/{id}; reqwest follows it automatically
-    let text = fetch_with_retry(client, &url, "application/json").await?;
+    let text = fetch(client, &url, "application/json", 5).await?;
     let eval: HydraEval = serde_json::from_str(&text)?;
-
-    let nixpkgs_commit = eval
-        .jobsetevalinputs
-        .get("nixpkgs")
-        .and_then(|i| i.revision.clone())
-        .ok_or_else(|| anyhow!("eval {} has no nixpkgs input", eval.id))?;
 
     Ok(EvalInfo {
         id: eval.id,
         time: format_timestamp(eval.timestamp),
-        nixpkgs_commit,
     })
 }
 
@@ -69,7 +54,7 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
 
     // HTML endpoint — the JSON API (/eval/{id}/builds) times out on large evals
     let url = format!("https://hydra.nixos.org/eval/{eval_id}?full=1");
-    let html = fetch_with_retry(client, &url, "text/html").await?;
+    let html = fetch(client, &url, "text/html", 5).await?;
 
     let builds = parse_eval_html(&html, is_nixos, eval_id)?;
 
@@ -77,15 +62,7 @@ pub async fn get_eval_builds(client: &Client, eval_id: u64, is_nixos: bool) -> R
     Ok(builds)
 }
 
-async fn fetch_with_retry(client: &Client, url: &str, accept: &str) -> Result<String> {
-    do_fetch(client, url, accept, 5).await
-}
-
-async fn fetch_with_throttled_retry(client: &Client, url: &str, accept: &str) -> Result<String> {
-    do_fetch(client, url, accept, 8).await
-}
-
-async fn do_fetch(client: &Client, url: &str, accept: &str, max_attempts: u32) -> Result<String> {
+async fn fetch(client: &Client, url: &str, accept: &str, max_attempts: u32) -> Result<String> {
     for attempt in 1..=max_attempts {
         let resp = client
             .get(url)
@@ -128,10 +105,6 @@ pub fn format_timestamp(ts: u64) -> String {
         .unwrap_or_default()
         .format("%Y-%m-%d %H:%M:%S (UTC)")
         .to_string()
-}
-
-pub fn now_formatted() -> String {
-    format_timestamp(chrono::Utc::now().timestamp() as u64)
 }
 
 fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build>> {
@@ -200,7 +173,6 @@ fn parse_eval_html(html: &str, is_nixos: bool, eval_id: u64) -> Result<Vec<Build
             platform,
             hydra_id,
             status,
-            is_nixos,
         });
     }
 
@@ -253,7 +225,7 @@ pub async fn resolve_failing_deps(
             let _permit = sem.acquire().await.ok()?;
             let result = get_failing_dep_id(&client, hydra_id).await;
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-            if done >= total || done % PROGRESS_EVERY == 0 {
+            if done >= total || done.is_multiple_of(PROGRESS_EVERY) {
                 log::info!("Dependency resolution: {done}/{total}");
             }
             match result {
@@ -282,7 +254,7 @@ pub async fn resolve_failing_deps(
 /// dependency that caused the failure (from the "propagated from" link).
 async fn get_failing_dep_id(client: &Client, build_id: u64) -> Result<Option<u64>> {
     let url = format!("https://hydra.nixos.org/build/{build_id}");
-    let html = fetch_with_throttled_retry(client, &url, "text/html").await?;
+    let html = fetch(client, &url, "text/html", 8).await?;
 
     let doc = Html::parse_document(&html);
     let sel = Selector::parse("a[href*='/build/']").unwrap();
