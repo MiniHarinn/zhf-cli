@@ -1,152 +1,164 @@
-use std::collections::{HashMap, HashSet};
-use tokio::process::Command;
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
 
 use crate::hydra::Build;
+
+// Pre-computed channel dumps published by channels.nixos.org. Same artifact
+// search.nixos.org indexes — produced by flake-info/nix-env --meta once per
+// channel bump, so we avoid running nix locally at all.
+//
+// The -staging and -staging-next channels don't publish packages.json.br
+// (verified: 404). For those jobsets we reuse the -unstable artifact and
+// accept that maintainers can drift by a few days; maintainers.nix changes
+// rarely enough that this is not a meaningful regression.
+const NIXOS_UNSTABLE_URL: &str = "https://channels.nixos.org/nixos-unstable/packages.json.br";
+const NIXPKGS_UNSTABLE_URL: &str = "https://channels.nixos.org/nixpkgs-unstable/packages.json.br";
 
 #[derive(Default, Clone)]
 pub struct MetaInfo {
     pub maintainers: Vec<String>,
 }
 
-/// Bulk-resolve maintainers for every attrpath in `builds` using a single
-/// `nix-env -qaP --json --meta` invocation against the pinned nixpkgs commit.
-///
-/// This is the same shape `flake-info` uses to feed search.nixos.org: one
-/// process amortizes the nixpkgs import cost across the entire release set,
-/// avoiding the per-batch re-import that the previous `nix eval --expr` loop
-/// paid. Returns a map keyed by `Build::attrpath` (with the `nixos.` /
-/// `nixpkgs.` prefix preserved) so callers can look up by the same key they
-/// already store.
-pub async fn resolve_all(
-    builds: &[Build],
-    commit: &str,
-    is_nixos: bool,
-) -> HashMap<String, MetaInfo> {
-    // Deduplicate attrpaths and remember the corresponding nix-env lookup key.
-    // Hydra stores `attrpath` with a "nixos."/"nixpkgs." prefix; nix-env's
-    // attrPath is relative to the release.nix root, i.e. without that prefix.
-    let mut wanted: HashMap<String, String> = HashMap::new(); // lookup_key -> build.attrpath
-    for build in builds {
-        let lookup = lookup_key(&build.nix_attr, is_nixos).to_string();
-        wanted.entry(lookup).or_insert_with(|| build.attrpath.clone());
-    }
-    if wanted.is_empty() {
-        return HashMap::new();
-    }
-
-    let nix_file = if is_nixos {
-        "<nixpkgs/nixos/release.nix>"
-    } else {
-        "<nixpkgs/pkgs/top-level/release.nix>"
-    };
-
-    log::info!(
-        "Bulk-fetching maintainer metadata via nix-env -qaP (is_nixos={is_nixos}, wanted={})",
-        wanted.len()
-    );
-
-    let nixpkgs_url = format!("nixpkgs=https://github.com/NixOS/nixpkgs/archive/{commit}.tar.gz");
-
-    let output = Command::new("nix-env")
-        .args([
-            "-qaP",
-            "--json",
-            "--meta",
-            "--file",
-            nix_file,
-            "--arg",
-            "config",
-            "{ allowBroken = true; allowUnfree = true; allowInsecure = true; }",
-        ])
-        .env("NIX_PATH", &nixpkgs_url)
-        .env("NIXPKGS_ALLOW_BROKEN", "1")
-        .env("NIXPKGS_ALLOW_UNFREE", "1")
-        .env("NIXPKGS_ALLOW_INSECURE", "1")
-        .output()
-        .await;
-
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        Ok(o) => {
-            log::warn!(
-                "nix-env -qaP failed (is_nixos={is_nixos}): {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-            return HashMap::new();
-        }
-        Err(e) => {
-            log::warn!("Could not spawn nix-env: {e}");
-            return HashMap::new();
-        }
-    };
-
-    let parsed: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("nix-env --json parse error: {e}");
-            return HashMap::new();
-        }
-    };
-
-    // nix-env --json emits either an object (keyed by pkg-name with inner
-    // attrPath) or, on newer versions, an array of entries. Handle both.
-    let entries: Vec<(Option<String>, &serde_json::Value)> = match &parsed {
-        serde_json::Value::Object(obj) => obj
-            .iter()
-            .map(|(k, v)| (Some(k.clone()), v))
-            .collect(),
-        serde_json::Value::Array(arr) => arr.iter().map(|v| (None, v)).collect(),
-        _ => {
-            log::warn!("nix-env --json returned unexpected top-level shape");
-            return HashMap::new();
-        }
-    };
-
-    let mut matched: HashSet<String> = HashSet::new();
-    let mut result: HashMap<String, MetaInfo> = HashMap::new();
-
-    for (outer_key, entry) in entries {
-        let attrpath = entry
-            .get("attrPath")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .or(outer_key);
-        let Some(attrpath) = attrpath else { continue };
-
-        let Some(full_attrpath) = wanted.get(&attrpath) else {
-            continue;
-        };
-
-        let maintainers = entry
-            .get("meta")
-            .and_then(|m| m.get("maintainers"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m.get("github")?.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        matched.insert(attrpath);
-        result.insert(full_attrpath.clone(), MetaInfo { maintainers });
-    }
-
-    log::info!(
-        "Maintainers: matched {}/{} wanted attrs for is_nixos={is_nixos}",
-        matched.len(),
-        wanted.len()
-    );
-
-    result
+pub struct MetaLookup {
+    by_attr: HashMap<String, Vec<String>>,
 }
 
-/// Convert a Hydra `nix_attr` to the attrPath nix-env emits for the
-/// corresponding release.nix root (no leading `nixos.`).
-fn lookup_key<'a>(nix_attr: &'a str, is_nixos: bool) -> &'a str {
-    if is_nixos {
-        nix_attr.strip_prefix("nixos.").unwrap_or(nix_attr)
-    } else {
-        nix_attr
+impl MetaLookup {
+    /// Fetch the two -unstable channel artifacts concurrently, decompress
+    /// brotli, parse JSON, and merge into one attrpath → github-handles map.
+    pub async fn fetch(client: &reqwest::Client) -> Result<Self> {
+        let (nixos_map, nixpkgs_map) = futures::try_join!(
+            fetch_channel(client, "nixos-unstable", NIXOS_UNSTABLE_URL),
+            fetch_channel(client, "nixpkgs-unstable", NIXPKGS_UNSTABLE_URL),
+        )?;
+
+        let mut by_attr = nixpkgs_map;
+        // nixos-unstable covers jobset-specific attrs (module tests absent; but
+        // any nixos. attr that is a real package lives here). Merge it on top
+        // — on overlap both channels agree on maintainers, so order is
+        // cosmetic.
+        by_attr.extend(nixos_map);
+
+        log::info!("Maintainers lookup built: {} attrs indexed", by_attr.len());
+        Ok(Self { by_attr })
     }
+
+    /// Look up maintainers for each build and key the result by
+    /// `build.attrpath` (preserving the `nixos.`/`nixpkgs.` prefix that the
+    /// rest of the pipeline uses). Empty `maintainers` is the expected miss
+    /// case — nixosTests.* and aggregate Hydra jobs aren't packages and
+    /// aren't in the artifact.
+    pub fn resolve(&self, builds: &[Build]) -> HashMap<String, MetaInfo> {
+        let mut out: HashMap<String, MetaInfo> = HashMap::new();
+        let mut with_meta = 0usize;
+        for b in builds {
+            if out.contains_key(&b.attrpath) {
+                continue;
+            }
+            // packages.json keys are raw attrpaths — no `nixos.` prefix and
+            // no trailing platform. Hydra job names embed both.
+            let platform_suffix = format!(".{}", b.platform);
+            let without_platform = b
+                .nix_attr
+                .strip_suffix(&platform_suffix)
+                .unwrap_or(&b.nix_attr);
+            let lookup_key = without_platform
+                .strip_prefix("nixos.")
+                .unwrap_or(without_platform);
+            let maintainers = self.by_attr.get(lookup_key).cloned().unwrap_or_default();
+            if !maintainers.is_empty() {
+                with_meta += 1;
+            }
+            out.insert(b.attrpath.clone(), MetaInfo { maintainers });
+        }
+        log::info!(
+            "Maintainers resolved: {}/{} attrs have at least one maintainer",
+            with_meta,
+            out.len()
+        );
+        out
+    }
+}
+
+async fn fetch_channel(
+    client: &reqwest::Client,
+    label: &str,
+    url: &str,
+) -> Result<HashMap<String, Vec<String>>> {
+    log::info!("Fetching {label} channel artifact: {url}");
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("requesting {url}"))?
+        .error_for_status()
+        .with_context(|| format!("unexpected status for {url}"))?
+        .bytes()
+        .await
+        .with_context(|| format!("reading body from {url}"))?;
+
+    log::info!(
+        "{label}: downloaded {:.1} MiB brotli, decompressing…",
+        bytes.len() as f64 / (1024.0 * 1024.0)
+    );
+
+    // 4 KiB input buffer is the crate's documented default.
+    let decoder = brotli::Decompressor::new(std::io::Cursor::new(bytes), 4096);
+    // A BufReader keeps serde_json's small reads cheap — the decompressor
+    // itself is unbuffered, so every serde_json read would otherwise walk
+    // through the brotli state machine.
+    let reader = std::io::BufReader::with_capacity(64 * 1024, decoder);
+
+    let doc: PackagesDoc = serde_json::from_reader(reader)
+        .with_context(|| format!("parsing {label} packages.json"))?;
+
+    // Project to attrpath → [github]; drop every other field immediately so
+    // peak RAM is dominated by this small map, not the full JSON tree.
+    let map: HashMap<String, Vec<String>> = doc
+        .packages
+        .into_iter()
+        .map(|(attr, entry)| {
+            let handles: Vec<String> = entry
+                .meta
+                .maintainers
+                .into_iter()
+                .filter_map(|m| m.github)
+                .collect();
+            (attr, handles)
+        })
+        .collect();
+
+    let non_empty = map.values().filter(|v| !v.is_empty()).count();
+    log::info!(
+        "{label}: {} attrs in lookup ({} with github handles)",
+        map.len(),
+        non_empty
+    );
+    Ok(map)
+}
+
+#[derive(Deserialize)]
+struct PackagesDoc {
+    #[serde(default)]
+    packages: HashMap<String, PackageEntry>,
+}
+
+#[derive(Deserialize, Default)]
+struct PackageEntry {
+    #[serde(default)]
+    meta: PackageMeta,
+}
+
+#[derive(Deserialize, Default)]
+struct PackageMeta {
+    #[serde(default)]
+    maintainers: Vec<Maintainer>,
+}
+
+#[derive(Deserialize)]
+struct Maintainer {
+    #[serde(default)]
+    github: Option<String>,
 }

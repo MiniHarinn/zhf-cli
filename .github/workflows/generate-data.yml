@@ -21,12 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v14
-
-      - uses: DeterminateSystems/magic-nix-cache-action@v8
-        # Caches Nix store paths between runs — avoids re-downloading the
-        # nixpkgs tarball on every workflow run when the commit hasn't changed.
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
