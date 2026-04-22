@@ -78,16 +78,18 @@ async fn main() -> Result<()> {
     }
 
     log::info!(
-        "Resolving maintainers: {} unique nixos attrs, {} unique nixpkgs attrs (concurrent)…",
+        "Resolving maintainers (bulk nix-env): {} unique nixos attrs, {} unique nixpkgs attrs…",
         global_nixos.len(),
         global_nixpkgs.len()
     );
 
-    let sem = maintainers::make_semaphore();
-    let (nixos_maintainers, nixpkgs_maintainers) = tokio::join!(
-        maintainers::resolve_all(&global_nixos, nixos_unstable_commit, sem.clone()),
-        maintainers::resolve_all(&global_nixpkgs, nixpkgs_unstable_commit, sem.clone()),
-    );
+    // Serial, not tokio::join! — each nix-env evaluates all of nixpkgs meta,
+    // which is memory-heavy. Running sequentially keeps peak RAM to one full
+    // nixpkgs eval graph at a time.
+    let nixos_maintainers =
+        maintainers::resolve_all(&global_nixos, nixos_unstable_commit, true).await;
+    let nixpkgs_maintainers =
+        maintainers::resolve_all(&global_nixpkgs, nixpkgs_unstable_commit, false).await;
 
     let mut all_maintainers = nixos_maintainers;
     all_maintainers.extend(nixpkgs_maintainers);
